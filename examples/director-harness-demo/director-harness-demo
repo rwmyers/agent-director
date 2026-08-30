@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""A reference harness plugin for agent-director.
+
+It is a complete, working implementation of the protocol in about a hundred
+lines, in a language director knows nothing about. That is the point: if this
+can be written against nothing but docs/HARNESS-PLUGINS.md, the interface is an
+interface rather than an aspiration.
+
+The "harness" here is a shell script per engagement, which is enough to
+exercise every verb honestly without depending on any agent tool being
+installed.
+
+Install by putting it on $PATH:
+
+    cp director-harness-demo ~/.local/bin/
+    director harnesses
+"""
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import sys
+import time
+
+API_VERSION = 1
+STATE = pathlib.Path(os.environ.get("DEMO_HOME", pathlib.Path.home() / ".cache" / "director-demo"))
+
+
+def reply(obj):
+    json.dump(obj, sys.stdout)
+    sys.exit(0)
+
+
+def fail(message):
+    json.dump({"error": message}, sys.stdout)
+    sys.exit(1)
+
+
+def record(ref):
+    return STATE / f"{ref}.json"
+
+
+def load(ref):
+    try:
+        return json.loads(record(ref).read_text())
+    except FileNotFoundError:
+        return None
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def observe(ref):
+    held = load(ref)
+    if held is None:
+        # Not an error: an engagement can legitimately disappear. Saying so
+        # lets director tell that apart from this plugin being broken.
+        return {"found": False}
+
+    log = pathlib.Path(held["log"])
+    last_activity = ""
+    if log.exists():
+        # An activity clock the agent cannot forge or forget, which is what
+        # lets director tell a busy engagement from a wedged one.
+        last_activity = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(log.stat().st_mtime))
+
+    return {
+        "ref": ref,
+        "found": True,
+        "lifecycle": "working" if alive(held["pid"]) else "done",
+        "last_activity_at": last_activity,
+        "detail": {"pid": str(held["pid"]), "log": held["log"]},
+    }
+
+
+def main():
+    verb = sys.argv[1] if len(sys.argv) > 1 else ""
+    envelope = json.load(sys.stdin) if not sys.stdin.isatty() else {}
+    params = envelope.get("params") or {}
+
+    if verb == "describe":
+        # Declaring no enforceable capabilities is honest: this harness cannot
+        # restrict anything. director will therefore refuse to spawn it under a
+        # restricted permission scope rather than pretend the scope held.
+        reply({"api_version": API_VERSION, "name": "demo", "version": "0.1.0", "enforces": []})
+
+    STATE.mkdir(parents=True, exist_ok=True)
+
+    if verb == "spawn":
+        ref = params["ID"] if "ID" in params else params.get("id", "")
+        log = STATE / f"{ref}.log"
+        env = dict(os.environ)
+        env.update(params.get("Env") or params.get("env") or {})
+        prompt = params.get("Prompt") or params.get("prompt") or ""
+        (STATE / f"{ref}.prompt").write_text(prompt)
+        with open(log, "w") as handle:
+            child = subprocess.Popen(
+                ["/bin/sh", "-c", 'echo "demo engagement started"; sleep 300'],
+                cwd=params.get("Dir") or params.get("dir") or ".",
+                stdout=handle, stderr=handle, stdin=subprocess.DEVNULL,
+                env=env, start_new_session=True,
+            )
+        record(ref).write_text(json.dumps({"pid": child.pid, "log": str(log)}))
+        reply({"ref": ref, "detail": {"pid": str(child.pid), "log": str(log)}})
+
+    if verb == "get":
+        reply(observe(params.get("ref", "")))
+
+    if verb == "list":
+        reply({"engagements": [observe(p.stem) for p in STATE.glob("*.json")]})
+
+    if verb == "send":
+        ref = params.get("Ref") or params.get("ref", "")
+        held = load(ref)
+        if held is None:
+            fail(f"no engagement {ref}")
+        with open(held["log"], "a") as handle:
+            handle.write((params.get("Text") or params.get("text", "")) + "\n")
+        reply({})
+
+    if verb == "read":
+        ref = params.get("Ref") or params.get("ref", "")
+        held = load(ref)
+        if held is None:
+            fail(f"no engagement {ref}")
+        lines = pathlib.Path(held["log"]).read_text().splitlines()
+        cursor = int(params.get("Cursor") or params.get("cursor") or 0)
+        turns = [{"seq": str(i + 1), "role": "assistant", "text": line}
+                 for i, line in enumerate(lines) if i >= cursor]
+        reply({"kind": "turns", "cursor": str(len(lines)), "total": len(lines),
+               "complete": True, "turns": turns})
+
+    if verb == "stop":
+        ref = params.get("Ref") or params.get("ref", "")
+        held = load(ref)
+        if held is not None and alive(held["pid"]):
+            os.kill(held["pid"], signal.SIGTERM)
+        reply({})
+
+    fail(f"unknown verb {verb!r}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,4 @@
+# A director's own configuration and state, when this repo is used as a
+# director project. Not the director/ source package — an earlier "/director"
+# here silently excluded the whole core package from version control.
+.director/
