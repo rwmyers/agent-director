@@ -6,3 +6,5 @@
 .claude/
 # Gemini / Antigravity-specific setup
 .gemini
+# General agent configuration
+.agents
