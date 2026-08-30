@@ -156,9 +156,15 @@ in its own state file. Configuration resolves from the nearest `.director`
 directory upward, so different projects get entirely independent setups.
 
 ```sh
-director where       # which root won, and what each layer contributed
-director directors   # who is registered here
+director where            # which root won, and what each layer contributed
+director directors        # who is registered here
+director retire <id>      # remove one; refuses while its agents are still running
 ```
+
+A director's state file is the only thing mapping an engagement back to its
+harness, so `retire` refuses while anything is alive rather than leaving agents
+running that nothing can reach. `--stop` ends them first; `--force` orphans
+them deliberately and says which.
 
 ## Getting started
 
@@ -204,7 +210,7 @@ on one fleet would both spawn, both answer, and share a read cursor.
 ## Commands
 
 **Setup** — `init` · `attach` · `where` · `workflows` · `tasks` · `directors` ·
-`harnesses` · `skills` · `install`
+`retire` · `harnesses` · `skills` · `install`
 
 **Directing** — `spawn` · `status` · `read` · `send` · `answer` · `nudge` ·
 `stop` · `resume` · `note`

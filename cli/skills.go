@@ -4,7 +4,6 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -50,7 +49,7 @@ func newSkillsCmd() *cobra.Command {
 A skill-aware harness loads them from disk after "director install". An agent
 with only a shell can read the same text here:
 
-    director skills --cat agent-director`,
+    director skills --cat director`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if cat != "" {
@@ -68,11 +67,13 @@ with only a shell can read the same text here:
 				return err
 			}
 			if listPath {
-				roots, err := resolveRoots()
-				if err != nil {
-					return err
+				// Where they would go, per harness, rather than a single
+				// answer: skills live wherever each harness looks, and there
+				// is no one director-owned directory that anything reads.
+				for _, candidate := range knownHosts() {
+					fmt.Printf("%-14s global  %s\n", candidate.name, candidate.globalDir())
+					fmt.Printf("%-14s project %s\n", candidate.name, candidate.projectDir("<project>"))
 				}
-				fmt.Println(filepath.Join(roots.Primary, "skills"))
 				return nil
 			}
 			if opts.asJSON {
@@ -86,114 +87,6 @@ with only a shell can read the same text here:
 		},
 	}
 	cmd.Flags().StringVar(&cat, "cat", "", "print one skill's text")
-	cmd.Flags().BoolVar(&listPath, "path", false, "print where skills are installed under this root")
+	cmd.Flags().BoolVar(&listPath, "path", false, "print where each harness looks for skills")
 	return cmd
-}
-
-// skillHost is somewhere the skills can be installed to.
-type skillHost struct {
-	name   string
-	dir    string
-	detect func() bool
-}
-
-// knownHosts is where skills go for hosts we know the convention for.
-//
-// This is the one place a harness name legitimately appears on the director
-// side: installing is inherently host-specific. Everything else — the skills,
-// the commands, the output — stays neutral, and an unknown host is given the
-// path rather than an error, so a harness nobody has heard of is still usable.
-func knownHosts() []skillHost {
-	home, _ := os.UserHomeDir()
-	return []skillHost{
-		{
-			name: "claude-code",
-			dir:  filepath.Join(home, ".claude", "skills"),
-			detect: func() bool {
-				_, err := os.Stat(filepath.Join(home, ".claude"))
-				return err == nil
-			},
-		},
-	}
-}
-
-func newInstallCmd() *cobra.Command {
-	var host string
-	var dryRun bool
-
-	cmd := &cobra.Command{
-		Use:   "install",
-		Short: "Install the director skills for a harness on this machine",
-		Long: `Copies the shipped skills where a harness will find them, and copies
-them into this configuration root so they can be edited.
-
-Prints exactly what it would write with --dry-run. An unrecognised host is not
-an error: the path is printed so the skills can be placed by hand.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			roots, err := resolveRoots()
-			if err != nil {
-				return err
-			}
-
-			targets := []string{filepath.Join(roots.Primary, "skills")}
-			for _, candidate := range knownHosts() {
-				if host != "" && host != candidate.name {
-					continue
-				}
-				if host == "" && !candidate.detect() {
-					continue
-				}
-				targets = append(targets, candidate.dir)
-			}
-
-			if len(targets) == 1 && host == "" {
-				fmt.Println("No known harness detected on this machine.")
-				fmt.Println("The skills are still readable with: director skills --cat agent-director")
-				fmt.Println()
-			}
-
-			for _, target := range targets {
-				written, err := copySkills(target, dryRun)
-				if err != nil {
-					return err
-				}
-				for _, path := range written {
-					if dryRun {
-						fmt.Printf("would write %s\n", path)
-					} else {
-						fmt.Printf("wrote %s\n", path)
-					}
-				}
-			}
-			return nil
-		},
-	}
-	cmd.Flags().StringVar(&host, "host", "", "install for a specific harness rather than autodetecting")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be written and change nothing")
-	return cmd
-}
-
-func copySkills(target string, dryRun bool) ([]string, error) {
-	var written []string
-	err := fs.WalkDir(skillSet, "skills", func(path string, entry fs.DirEntry, err error) error {
-		if err != nil || entry.IsDir() {
-			return err
-		}
-		relative := strings.TrimPrefix(path, "skills/")
-		destination := filepath.Join(target, relative)
-		written = append(written, destination)
-		if dryRun {
-			return nil
-		}
-		body, err := skillSet.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
-			return err
-		}
-		return os.WriteFile(destination, body, 0o644) // #nosec G306 -- instructions are meant to be readable
-	})
-	return written, err
 }
