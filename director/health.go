@@ -46,6 +46,14 @@ const (
 	HealthUnknown Health = "unknown"
 )
 
+// AllHealths is every verdict the core can return, for callers that have to
+// validate a health somebody typed. Kept beside the constants so a new one
+// cannot be added without this list being in front of whoever adds it.
+var AllHealths = []Health{
+	HealthOK, HealthQuiet, HealthStalled, HealthBlocked,
+	HealthAbandoned, HealthComplete, HealthUnknown,
+}
+
 // NeedsDirector reports whether this verdict calls for an action now. It is
 // what `director status --unhealthy` filters on, and the shape of the check a
 // director should be running every turn.

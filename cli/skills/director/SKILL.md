@@ -89,15 +89,63 @@ answer something you could have answered yourself. Do not delegate to look busy.
    server is down.
 2. **Brief and dispatch.** One `director spawn` per independent piece of work.
    Dispatch several without waiting between them — that is the entire point.
-3. **Check, every turn.** `director status --unhealthy` is cheap and reads no
+3. **Arrange your next turn.** Background `director wait` so an agent finishing
+   or getting stuck wakes you. See *Do not wait for a turn that may never
+   come* — without this, step 4 happens whenever the person next types, which
+   may be never.
+4. **Check, every turn.** `director status --unhealthy` is cheap and reads no
    transcripts. Run it before deciding anything.
-4. **Read only what changed.** `director read <id>` after status says something
+5. **Read only what changed.** `director read <id>` after status says something
    happened.
-5. **Act.** Answer questions, nudge stalls, stop what is going wrong, spawn
-   what the results imply.
-6. **Report to the person in their terms.** Not in status enums. "The auth
+6. **Act.** Answer questions, nudge stalls, stop what is going wrong, spawn
+   what the results imply. Then re-arm the wait.
+7. **Report to the person in their terms.** Not in status enums. "The auth
    review found two real bugs and is waiting on a decision about force-pushing"
    — not "eng_c90de129 is blocked".
+
+## Do not wait for a turn that may never come
+
+"Check every turn" carries an assumption worth making explicit: that you get
+another turn. You do not decide when that happens. Your next turn arrives when
+the person types something, and if they have stepped away, a `blocked`
+engagement sits there — stopped, unanswered, burning wall-clock — until they
+come back.
+
+So "I'll check on it next turn" followed by handing control back is not a plan.
+It is abandoning the fleet in a polite voice.
+
+If your harness can run a command in the background and give you control when it
+exits, that is the fix. `director wait` blocks until an engagement needs you and
+then exits, which turns *an agent responded* into *the director is running
+again*:
+
+```sh
+director wait --director <id> --until blocked,complete,abandoned,stalled
+```
+
+It prints the transition that woke it — which engagement, which health, and what
+the agent last said. Exit `0` means matched, `4` means `--timeout` elapsed,
+other non-zero means something went wrong. Background it right after
+dispatching; when it returns you are awake with the reason already in hand.
+
+Five things that will bite you otherwise:
+
+- **It fires once.** Re-arm after every wake, or you are back to waiting on the
+  person. There is a blind window while you do — keep it short.
+- **An engagement already in a matching health matches immediately.** That is
+  deliberate: a question already asked is never asked again, so a `wait` that
+  ignored current state would hang on exactly the thing you asked about. But it
+  means arming a broad `--until` while a finished engagement is still on the
+  books returns instantly and tells you nothing new. Scope it with
+  `--engagement <id>`.
+- **Never block on it in the foreground.** That is your whole fleet idle while
+  you wait on one engagement — the failure `director watch` warns about.
+- **The config root is resolved from the working directory.** A backgrounded
+  command may not start where you did; if it reports no such director for one
+  you can plainly see, pass `--config <root>`. `director where` prints it.
+- **If your harness cannot wake you this way**, say so when you hand back. Tell
+  the person plainly that nothing will be checked until they prompt you, rather
+  than implying someone is watching.
 
 ## Writing a brief
 
@@ -134,7 +182,8 @@ somebody something shipped when it did not.
 
 **Do not leave a blocked agent waiting.** An agent that asked a question is
 stopped and burning wall-clock. Nobody else will notice. Answer it or escalate
-it the same turn you see it.
+it the same turn you see it — and arrange to see it, by backgrounding
+`director wait` rather than hoping for a turn.
 
 ## Going further
 

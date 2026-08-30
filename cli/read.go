@@ -122,20 +122,98 @@ blocking on this would mean doing nothing while it waits.`,
 					}
 					continue
 				}
-				was := ""
-				if transition.Was != "" {
-					was = string(transition.Was) + " -> "
-				}
-				fmt.Printf("%s  %s  %s%s  %s/%s  %s\n",
-					transition.At.Local().Format("15:04:05"), transition.Engagement,
-					was, transition.Health, transition.Lifecycle,
-					orDash(transition.Progress), transition.Title)
+				fmt.Println(formatTransition(transition))
 			}
 			return nil
 		},
 	}
 	cmd.Flags().DurationVar(&interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
 	cmd.Flags().BoolVar(&initial, "initial", false, "emit the current state of every engagement before watching")
+	return cmd
+}
+
+// formatTransition renders one transition for a human. Shared by watch and
+// wait so that a line means the same thing whichever one printed it.
+func formatTransition(transition director.Transition) string {
+	was := ""
+	if transition.Was != "" {
+		was = string(transition.Was) + " -> "
+	}
+	return fmt.Sprintf("%s  %s  %s%s  %s/%s  %s",
+		transition.At.Local().Format("15:04:05"), transition.Engagement,
+		was, transition.Health, transition.Lifecycle,
+		orDash(transition.Progress), transition.Title)
+}
+
+func newWaitCmd() *cobra.Command {
+	var interval, timeout time.Duration
+	var until, engagements []string
+
+	defaultUntil := make([]string, 0, len(director.DefaultWaitUntil))
+	for _, health := range director.DefaultWaitUntil {
+		defaultUntil = append(defaultUntil, string(health))
+	}
+
+	cmd := &cobra.Command{
+		Use:   "wait",
+		Short: "Block until an engagement needs attention, then exit",
+		Long: `Blocks on the same transition feed as "director watch", and exits as
+soon as an engagement reaches a health you care about. It turns "an agent
+responded" into a process exit, so a supervisor can sleep instead of polling:
+
+    while director wait --json > /tmp/next; do
+      handle "$(jq -r .engagement < /tmp/next)"
+    done
+
+An engagement that is ALREADY in a matching health when wait starts matches
+immediately. Waiting only for subsequent changes would block forever on the
+very state you asked about, since a question already asked is not going to be
+asked again.
+
+A director should generally use "director status" on its own turn instead;
+blocking on this would mean doing nothing while it waits.
+
+Exit codes:
+  0  an engagement matched; the transition is printed on stdout
+  1  something went wrong
+  2  --engagement named an engagement that does not exist
+  3  a harness was unreachable
+  4  --timeout elapsed with no match`,
+		Args: cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			healths := make([]director.Health, 0, len(until))
+			for _, value := range until {
+				health, err := director.ParseHealth(value)
+				if err != nil {
+					return err
+				}
+				healths = append(healths, health)
+			}
+
+			d, err := open()
+			if err != nil {
+				return err
+			}
+			transition, err := d.Wait(cmd.Context(), director.WaitOptions{
+				Until:       healths,
+				Engagements: engagements,
+				Interval:    interval,
+				Timeout:     timeout,
+			})
+			if err != nil {
+				return err
+			}
+			if opts.asJSON {
+				return emit(transition)
+			}
+			fmt.Println(formatTransition(transition))
+			return nil
+		},
+	}
+	cmd.Flags().StringSliceVar(&until, "until", defaultUntil, "comma-separated healths to wake on")
+	cmd.Flags().StringSliceVar(&engagements, "engagement", nil, "wait for these engagements only (default: any)")
+	cmd.Flags().DurationVar(&timeout, "timeout", 0, "give up after this long (default: wait forever)")
+	cmd.Flags().DurationVar(&interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
 	return cmd
 }
 

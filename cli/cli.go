@@ -26,6 +26,10 @@ const (
 	exitError     = 1
 	exitNotFound  = 2
 	exitUnreachab = 3
+	// exitTimeout is distinct from exitError so that a script waiting on a
+	// fleet can tell "nothing happened in time" — a normal outcome it should
+	// loop on — from "the wait itself failed".
+	exitTimeout = 4
 )
 
 type globals struct {
@@ -50,6 +54,8 @@ func codeFor(err error) int {
 		return exitNotFound
 	case errors.Is(err, errHarnessUnreachable):
 		return exitUnreachab
+	case errors.Is(err, director.ErrWaitTimeout):
+		return exitTimeout
 	default:
 		return exitError
 	}
@@ -95,6 +101,7 @@ a script. Anything that can run a command can drive it.`,
 		newStatusCmd(),
 		newReadCmd(),
 		newWatchCmd(),
+		newWaitCmd(),
 		newResumeCmd(),
 		newSendCmd(),
 		newNudgeCmd(),

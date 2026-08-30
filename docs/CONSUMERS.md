@@ -24,6 +24,7 @@ director directors --json
 | 1 | error |
 | 2 | not found |
 | 3 | harness unreachable |
+| 4 | `director wait` timed out |
 
 `3` is worth handling separately: it means a harness's server is not running,
 which is a normal condition and not a reason to alarm anybody.
@@ -45,6 +46,27 @@ is the difference between notifying somebody and not.
 
 Add `--initial` to receive the current state of everything before watching, so a
 consumer that starts late is not looking at a blank screen.
+
+## Blocking until something needs attention
+
+`director wait` is the same feed with a stopping condition: it blocks and exits
+as soon as an engagement reaches a health you care about, so a supervisor sleeps
+rather than polls.
+
+```sh
+while director wait --json > /tmp/next; do
+  jq -r '"\(.engagement) is \(.health)"' < /tmp/next
+done
+```
+
+It wakes on `blocked,complete,abandoned,stalled` by default; `--until` narrows or
+widens that, `--engagement` restricts it to particular engagements, and
+`--timeout` gives up with exit code `4`, which is distinct from `1` so a script
+can tell "nothing happened in time" from "the wait failed".
+
+An engagement already in a matching health when `wait` starts matches
+immediately — otherwise a caller that spawned, then waited, would block forever
+on the state it was asking about.
 
 ## Multiple directors
 
