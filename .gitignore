@@ -2,3 +2,7 @@
 # director project. Not the director/ source package — an earlier "/director"
 # here silently excluded the whole core package from version control.
 .director/
+# Claude-specific setup
+.claude/
+# Gemini / Antigravity-specific setup
+.gemini
