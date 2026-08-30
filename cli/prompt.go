@@ -108,3 +108,26 @@ func (p prompter) selectMany(title, description string, options []huh.Option[str
 	}
 	return chosen, nil
 }
+
+// confirm asks a yes/no question.
+//
+// Anything other than an explicit yes — including aborting, and including an
+// empty stdin in accessible mode — declines, so backing out never triggers the
+// action being confirmed.
+func (p prompter) confirm(title, description, affirmative, negative string) (bool, error) {
+	var confirmed bool
+	field := huh.NewConfirm().
+		Title(title).
+		Description(description).
+		Affirmative(affirmative).
+		Negative(negative).
+		Value(&confirmed)
+
+	if err := p.run(field); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return false, nil
+		}
+		return false, err
+	}
+	return confirmed, nil
+}
