@@ -100,13 +100,18 @@ func (a *Adapter) Permits(allow []harness.Capability) error {
 	return nil
 }
 
-// tabCreateResult is what tab.create returns. Both identifiers are optional in
-// the decode because the pane may be reported directly or via a list; the
-// adapter resolves whichever arrived.
+// tabCreateResult is what tab.create returns: herdr's `tab_created` envelope,
+// which reports the tab and its root pane as two nested objects and flattens
+// neither into the result. Decoding a level too high is not an error in Go —
+// every field simply stays zero — so the nesting has to be right here or the
+// adapter silently believes herdr made a tab with no pane in it.
 type tabCreateResult struct {
-	TabID  string     `json:"tab_id"`
-	PaneID string     `json:"pane_id"`
-	Panes  []paneInfo `json:"panes"`
+	Tab      tabInfo  `json:"tab"`
+	RootPane paneInfo `json:"root_pane"`
+}
+
+type tabInfo struct {
+	TabID string `json:"tab_id"`
 }
 
 type paneInfo struct {
@@ -153,11 +158,13 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 		return harness.SpawnResult{}, err
 	}
 
-	paneID := tab.PaneID
-	if paneID == "" && len(tab.Panes) > 0 {
-		paneID = tab.Panes[0].PaneID
+	tabID := tab.Tab.TabID
+	if tabID == "" {
+		tabID = tab.RootPane.TabID
 	}
+	paneID := tab.RootPane.PaneID
 	if paneID == "" {
+		a.discardTab(tabID)
 		return harness.SpawnResult{}, fmt.Errorf("herdr created a tab but reported no pane to start an agent in")
 	}
 
@@ -170,6 +177,7 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 		"pane_id": paneID,
 		"args":    a.agentArgs(req),
 	}, nil); err != nil {
+		a.discardTab(tabID)
 		return harness.SpawnResult{}, fmt.Errorf("starting a %s agent in pane %s: %w", a.kind(), paneID, err)
 	}
 
@@ -180,6 +188,7 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 			"target": paneID,
 			"text":   req.Prompt,
 		}, nil); err != nil && !stalled(err) {
+			a.discardTab(tabID)
 			return harness.SpawnResult{}, fmt.Errorf("delivering the brief to pane %s: %w", paneID, err)
 		}
 	}
@@ -188,10 +197,28 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 		Ref: paneID,
 		Detail: map[string]string{
 			"pane_id": paneID,
-			"tab_id":  tab.TabID,
+			"tab_id":  tabID,
 			"kind":    a.kind(),
 		},
 	}, nil
+}
+
+// discardTab closes a tab this adapter created but could not use.
+//
+// Nothing downstream can do it instead. A failed spawn deliberately keeps its
+// state record, but that record's Ref is empty — there is no pane id in it — so
+// neither stopping nor removing the engagement has anything to close, and the
+// tab would sit in herdr's session for good. The adapter is the last place that
+// still knows the id.
+//
+// Any failure to close is dropped: the caller is being told why the spawn
+// failed, and burying that under a cleanup error would replace the answer with
+// a detail about the tidying up.
+func (a *Adapter) discardTab(tabID string) {
+	if tabID == "" {
+		return
+	}
+	_ = a.rpc().call("tab.close", map[string]any{"tab_id": tabID}, nil)
 }
 
 // agentArgs builds the command line for the agent herdr launches.
@@ -342,7 +369,18 @@ func lifecycleFor(agent agentInfo) harness.Lifecycle {
 	}
 }
 
-// paneReadResult is what pane.read returns.
+// paneReadResponse is what pane.read returns: herdr's `pane_read` envelope,
+// which nests the snapshot under "read" rather than returning its fields at the
+// top level.
+//
+// Getting this level wrong is worse than getting tab.create wrong, because it
+// does not fail. A decode aimed one level too high finds nothing, reports no
+// error, and hands back an empty screen — which a director reads as the agent
+// having said nothing at all.
+type paneReadResponse struct {
+	Read paneReadResult `json:"read"`
+}
+
 type paneReadResult struct {
 	PaneID    string `json:"pane_id"`
 	Text      string `json:"text"`
@@ -360,7 +398,7 @@ func (a *Adapter) Read(_ context.Context, req harness.ReadRequest) (harness.Read
 	if lines <= 0 {
 		lines = 200
 	}
-	var result paneReadResult
+	var result paneReadResponse
 	err := a.rpc().call("pane.read", map[string]any{
 		"pane_id":    req.Ref,
 		"source":     "recent_unwrapped",
@@ -381,7 +419,7 @@ func (a *Adapter) Read(_ context.Context, req harness.ReadRequest) (harness.Read
 		Turns: []harness.Turn{{
 			Role: "screen",
 			At:   a.now(),
-			Text: result.Text,
+			Text: result.Read.Text,
 		}},
 	}, nil
 }

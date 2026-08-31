@@ -81,6 +81,47 @@ func (s *fakeServer) handle(conn net.Conn) {
 	_, _ = conn.Write(append(body, '\n'))
 }
 
+// The replies below are herdr's own envelopes, carrying every field its
+// published schema marks required. They are transcribed from
+// `herdr api schema --json` — protocol 19, the schema the installed server
+// prints — and deliberately not from the Go structs that decode them.
+//
+// That direction matters. Fixtures written to match the structs agree with the
+// adapter by construction and can only ever confirm it, which is how a decode
+// aimed at the wrong nesting level passed these tests for its whole life
+// without once working against a real server.
+
+// tabCreatedReply is what tab.create answers with: the tab and its root pane as
+// separate nested objects, neither flattened into the result.
+func tabCreatedReply(tabID, paneID string) map[string]any {
+	return map[string]any{
+		"type": "tab_created",
+		"tab": map[string]any{
+			"tab_id": tabID, "workspace_id": "w1", "number": 1,
+			"label": "auth-review", "focused": false,
+			"pane_count": 1, "agent_status": "unknown",
+		},
+		"root_pane": map[string]any{
+			"pane_id": paneID, "terminal_id": "term1", "workspace_id": "w1",
+			"tab_id": tabID, "focused": false,
+			"agent_status": "unknown", "revision": 0,
+		},
+	}
+}
+
+// paneReadReply is what pane.read answers with: the snapshot nested under
+// "read", not returned at the top level.
+func paneReadReply(paneID, text string, truncated bool) map[string]any {
+	return map[string]any{
+		"type": "pane_read",
+		"read": map[string]any{
+			"pane_id": paneID, "workspace_id": "w1", "tab_id": "t1",
+			"source": "recent_unwrapped", "format": "text",
+			"text": text, "revision": 0, "truncated": truncated,
+		},
+	}
+}
+
 func (s *fakeServer) adapter() *Adapter {
 	fixed := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
 	return &Adapter{Socket: s.path, Kind: defaultKind, Now: func() time.Time { return fixed }}
@@ -187,7 +228,7 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	// start in it, so spawning is structurally two steps. This is the shape
 	// that forced the engagement ID and the harness Ref apart.
 	server := newFakeServer(t, map[string]any{
-		"tab.create": map[string]any{"tab_id": "t1", "pane_id": "p7"},
+		"tab.create": tabCreatedReply("t1", "p7"),
 	})
 
 	result, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
@@ -201,6 +242,9 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	if result.Ref != "p7" {
 		t.Errorf("Ref = %q, want herdr's own pane id %q", result.Ref, "p7")
 	}
+	if result.Detail["tab_id"] != "t1" {
+		t.Errorf("Detail[tab_id] = %q, want %q from the nested tab object", result.Detail["tab_id"], "t1")
+	}
 
 	methods := make([]string, len(server.calls))
 	for i, call := range server.calls {
@@ -212,17 +256,74 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	}
 }
 
+func TestAFailedSpawnDoesNotLeaveATabBehind(t *testing.T) {
+	t.Parallel()
+	// The tab already exists by the time anything can go wrong, and nothing
+	// downstream can reach it: a failed spawn keeps its state record on purpose,
+	// but that record's Ref is empty, so neither stopping nor removing the
+	// engagement has a pane to close. The adapter is the last thing that still
+	// knows the tab id, so if it walks away the tab is in herdr's session for
+	// good.
+	cases := []struct {
+		name    string
+		failing string
+	}{
+		{name: "the agent will not start", failing: "agent.start"},
+		{name: "the brief cannot be delivered", failing: "agent.prompt"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			server := newFakeServer(t, map[string]any{
+				"tab.create":     tabCreatedReply("t1", "p7"),
+				testCase.failing: &responseError{Code: "internal", Message: "no"},
+			})
+
+			if _, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
+				ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+				Allow: harness.AllCapabilities,
+			}); err == nil {
+				t.Fatalf("Spawn() = nil error, want the %s failure reported", testCase.failing)
+			}
+
+			var closed []any
+			for _, call := range server.calls {
+				if call.Method == "tab.close" {
+					closed = append(closed, call.Params)
+				}
+			}
+			if len(closed) != 1 {
+				t.Fatalf("Spawn() made %d tab.close calls, want exactly 1", len(closed))
+			}
+			params, ok := closed[0].(map[string]any)
+			if !ok {
+				t.Fatalf("tab.close params = %T, want an object", closed[0])
+			}
+			if params["tab_id"] != "t1" {
+				t.Errorf("tab.close tab_id = %v, want %q", params["tab_id"], "t1")
+			}
+		})
+	}
+}
+
 func TestReadIsAScreenSnapshot(t *testing.T) {
 	t.Parallel()
 	// herdr keeps a terminal, not a transcript. Saying so is what stops a
 	// director concluding an agent was silent when its output simply scrolled
 	// away.
 	server := newFakeServer(t, map[string]any{
-		"pane.read": map[string]any{"pane_id": "p7", "text": "some output", "truncated": true},
+		"pane.read": paneReadReply("p7", "some output", true),
 	})
 	result, err := server.adapter().Read(context.Background(), harness.ReadRequest{Ref: "p7"})
 	if err != nil {
 		t.Fatalf("Read() = %v, want no error", err)
+	}
+	// A read decoded at the wrong nesting level returns no error and an empty
+	// screen, which a director cannot tell from an agent that said nothing. The
+	// screen's contents are therefore the assertion that matters most here.
+	if len(result.Turns) != 1 || result.Turns[0].Text != "some output" {
+		t.Errorf("Turns = %v, want the pane's text; an empty screen reads as a silent agent", result.Turns)
 	}
 	if result.Kind != harness.ReadScreen {
 		t.Errorf("Kind = %v, want %v", result.Kind, harness.ReadScreen)
@@ -366,7 +467,7 @@ func TestSpawnDoesNotForwardAPaneIdentity(t *testing.T) {
 	// the emptied values on could overwrite what herdr sets and leave the pane
 	// unable to recognise itself. The socket is not identity and must survive.
 	server := newFakeServer(t, map[string]any{
-		"tab.create": map[string]any{"tab_id": "t1", "pane_id": "p7"},
+		"tab.create": tabCreatedReply("t1", "p7"),
 	})
 
 	_, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
