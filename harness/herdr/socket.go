@@ -225,6 +225,17 @@ func paneBusy(err error) bool {
 	return false
 }
 
+// waitTimedOut reports whether herdr was asked to wait for something and the
+// wait ran out. It is herdr answering the question, not failing to: the caller
+// decides whether nothing having happened is a problem.
+func waitTimedOut(err error) bool {
+	var replyErr *responseError
+	if errors.As(err, &replyErr) {
+		return replyErr.Code == "timeout"
+	}
+	return false
+}
+
 // stalled reports whether a prompt timed out waiting for a status change. That
 // means the agent is still working and we stopped watching, not that anything
 // went wrong.

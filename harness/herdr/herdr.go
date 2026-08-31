@@ -52,6 +52,22 @@ const agentWait = 30 * time.Second
 // agentPoll is how often that wait asks again.
 const agentPoll = 250 * time.Millisecond
 
+// agentWaitStep bounds one agent.wait call.
+//
+// It exists because the first call is made while the pane is still a shell with
+// no determinate agent status, and that is the one call that can block for its
+// whole timeout. Every later call returns in milliseconds.
+const agentWaitStep = 5 * time.Second
+
+// promptWait bounds how long herdr watches for a freshly started agent to act
+// on the brief before reporting that it never did.
+//
+// Long, because the only thing being waited for is a terminal accepting a
+// paste, and the cost of calling that too early is tearing down an agent that
+// was working. An agent that has not left idle after this long has not been
+// told anything.
+const promptWait = 30 * time.Second
+
 func (a *Adapter) pause(d time.Duration) {
 	if a.sleep == nil {
 		time.Sleep(d)
@@ -173,6 +189,14 @@ type agentListResult struct {
 	Agents []agentInfo `json:"agents"`
 }
 
+// agentWaitResult is what agent.wait returns: herdr's `agent_info` envelope,
+// which nests the agent under "agent" rather than returning its fields at the
+// top level. Decoding a level too high leaves LaunchPending false, which reads
+// as "ready" — so the wait would return immediately and always.
+type agentWaitResult struct {
+	Agent agentInfo `json:"agent"`
+}
+
 // Spawn starts an agent in a new tab.
 //
 // Two calls, because herdr requires it: a pane has to exist and be sitting at
@@ -221,12 +245,9 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 			a.discardTab(tabID)
 			return harness.SpawnResult{}, err
 		}
-		if err := a.rpc().call("agent.prompt", map[string]any{
-			"target": paneID,
-			"text":   req.Prompt,
-		}, nil); err != nil && !stalled(err) {
+		if err := a.deliverPrompt(paneID, req.Prompt); err != nil {
 			a.discardTab(tabID)
-			return harness.SpawnResult{}, fmt.Errorf("delivering the brief to pane %s: %w", paneID, err)
+			return harness.SpawnResult{}, err
 		}
 	}
 
@@ -300,31 +321,83 @@ func (a *Adapter) startAgent(name, paneID string, args []string) error {
 // success, or fails with an error that reads like a herdr fault rather than a
 // race.
 //
-// What ends the window is herdr's agent integration reporting in from inside
-// the agent's own process. Screen detection alone does not do it — herdr will
-// happily report the pane as an idle claude while still refusing to prompt it —
-// which is why the timeout message names the integration. Without it installed
-// this wait can only ever run out, and saying so is the difference between a
-// two-minute fix and another investigation.
+// The wait is agent.wait rather than a poll of agent.list, and that is the
+// whole of it. herdr settles a pending launch when something waits on that
+// agent; agent.list answers from the state it has already published and does
+// not settle anything. Poll agent.list and launch_pending stays set for as long
+// as you care to ask — observed here staying set for over five minutes on an
+// agent that was sitting at its prompt the whole time, and cleared within three
+// seconds by the first agent.wait against the same pane.
+//
+// agent.wait still has to be called in a loop. It returns as soon as the agent
+// has any determinate status, which arrives about half a second in and well
+// before the launch is settled, so a single call answers a different question
+// from the one being asked.
 func (a *Adapter) awaitAgent(paneID string) error {
 	attempts := int(agentWait / agentPoll)
 	for attempt := 0; ; attempt++ {
-		agents, err := a.list()
-		if err != nil {
+		agent, err := a.waitOnAgent(paneID)
+		switch {
+		case err == nil && !agent.LaunchPending:
+			return nil
+		// A wait that ran out is this loop's own tick, not a failure: herdr was
+		// asked to watch for a change and none came. Anything else — a pane that
+		// has gone, a server that has stopped — is real and is reported.
+		case err != nil && !waitTimedOut(err):
 			return err
-		}
-		for _, agent := range agents {
-			if agent.PaneID == paneID && !agent.LaunchPending {
-				return nil
-			}
 		}
 		if attempt >= attempts {
 			return fmt.Errorf(
-				"the %s agent started in pane %s but herdr never reported it ready to be prompted within %s. "+
-					"herdr learns that from its agent integration, which reports from inside the agent's own process: check `herdr integration status` and install the one for %s if it is missing",
+				"the %s agent started in pane %s but herdr never settled its launch within %s. "+
+					"herdr learns an agent is live from its agent integration, which reports from inside the agent's own process: check `herdr integration status` and install the one for %s if it is missing",
 				a.kind(), paneID, agentWait, a.kind())
 		}
 		a.pause(agentPoll)
+	}
+}
+
+// waitOnAgent asks herdr to wait on one agent and reports what it says.
+func (a *Adapter) waitOnAgent(paneID string) (agentInfo, error) {
+	var result agentWaitResult
+	err := a.rpc().call("agent.wait", map[string]any{
+		"target":     paneID,
+		"timeout_ms": agentWaitStep.Milliseconds(),
+	}, &result)
+	return result.Agent, err
+}
+
+// deliverPrompt hands the brief to an agent that has just started.
+//
+// It asks herdr to watch for the agent to leave idle, because herdr accepting
+// the prompt is not the agent having taken it. Those two come apart at spawn
+// time: a settled launch says herdr's bookkeeping is done, and a TUI a moment
+// behind it swallows the paste and sits at an empty input box. The engagement
+// then exists, is recorded as running, and has been told nothing — which is
+// indistinguishable from an agent thinking, and stays that way until somebody
+// looks at the pane.
+//
+// A brief that never took therefore fails the spawn rather than passing for
+// one. Any of working, blocked or done will do as evidence: all three mean the
+// text reached the agent, and which one it lands on is about what the brief
+// asks for rather than about delivery.
+func (a *Adapter) deliverPrompt(paneID, text string) error {
+	err := a.rpc().call("agent.prompt", map[string]any{
+		"target": paneID,
+		"text":   text,
+		"wait": map[string]any{
+			"until":      []string{"working", "blocked", "done"},
+			"timeout_ms": promptWait.Milliseconds(),
+		},
+	}, nil)
+	switch {
+	case err == nil:
+		return nil
+	case stalled(err), waitTimedOut(err):
+		return fmt.Errorf(
+			"herdr took the brief for pane %s but the %s agent never acted on it within %s, so it was delivered to an input that was not listening",
+			paneID, a.kind(), promptWait)
+	default:
+		return fmt.Errorf("delivering the brief to pane %s: %w", paneID, err)
 	}
 }
 
