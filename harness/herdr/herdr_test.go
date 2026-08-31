@@ -293,3 +293,113 @@ func TestAgentArgsCarryTheCallback(t *testing.T) {
 		t.Errorf("agentArgs() = %v, want the display name passed to the agent", args)
 	}
 }
+
+func TestInPane(t *testing.T) {
+	// No t.Parallel: these cases set the process environment, which is the
+	// thing under test.
+	cases := []struct {
+		name     string
+		env      map[string]string
+		wantPane string
+		wantOK   bool
+	}{
+		{
+			name:   "nothing set at all is not a pane",
+			env:    map[string]string{},
+			wantOK: false,
+		},
+		{
+			// The trap this exists to avoid. The socket variable is set whenever
+			// herdr is configured, in a pane or out of one, so treating it as a
+			// presence signal would place every engagement into panes on any
+			// machine that has herdr installed.
+			name:   "a socket alone is not a pane",
+			env:    map[string]string{EnvSocket: "/tmp/herdr.sock"},
+			wantOK: false,
+		},
+		{
+			name:   "a pane id without the pane marker is not a pane",
+			env:    map[string]string{EnvPane: "w6:p1"},
+			wantOK: false,
+		},
+		{
+			name:   "any value other than 1 is not a pane",
+			env:    map[string]string{EnvInPane: "0", EnvPane: "w6:p1"},
+			wantOK: false,
+		},
+		{
+			name:     "the marker and an id is a pane",
+			env:      map[string]string{EnvInPane: "1", EnvPane: "w6:p1"},
+			wantPane: "w6:p1",
+			wantOK:   true,
+		},
+		{
+			// Still in a pane. The id is a label for a person, and losing the
+			// label must not change the answer to the question being asked.
+			name:     "the marker without an id is still a pane",
+			env:      map[string]string{EnvInPane: "1"},
+			wantPane: "",
+			wantOK:   true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			for _, key := range []string{EnvInPane, EnvPane, EnvSocket} {
+				t.Setenv(key, testCase.env[key])
+			}
+			pane, ok := InPane()
+			if ok != testCase.wantOK {
+				t.Errorf("InPane() ok = %v, want %v", ok, testCase.wantOK)
+			}
+			if pane != testCase.wantPane {
+				t.Errorf("InPane() pane = %q, want %q", pane, testCase.wantPane)
+			}
+		})
+	}
+}
+
+func TestSpawnDoesNotForwardAPaneIdentity(t *testing.T) {
+	t.Parallel()
+	// A director in a pane empties these on the way past so nothing it spawns
+	// inherits its pane. herdr assigns a new pane its own identity, so passing
+	// the emptied values on could overwrite what herdr sets and leave the pane
+	// unable to recognise itself. The socket is not identity and must survive.
+	server := newFakeServer(t, map[string]any{
+		"tab.create": map[string]any{"tab_id": "t1", "pane_id": "p7"},
+	})
+
+	_, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
+		ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review",
+		Allow: harness.AllCapabilities,
+		Env: map[string]string{
+			"DIRECTOR_TOKEN": "t",
+			EnvInPane:        "",
+			EnvPane:          "",
+			EnvSocket:        "/tmp/herdr.sock",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Spawn() = %v, want no error", err)
+	}
+
+	params, ok := server.calls[0].Params.(map[string]any)
+	if !ok {
+		t.Fatalf("tab.create params = %T, want an object", server.calls[0].Params)
+	}
+	env, ok := params["env"].(map[string]any)
+	if !ok {
+		t.Fatalf("tab.create env = %T, want an object", params["env"])
+	}
+	for _, key := range []string{EnvInPane, EnvPane} {
+		if _, present := env[key]; present {
+			t.Errorf("tab.create was handed %s; herdr names its own panes", key)
+		}
+	}
+	if env[EnvSocket] != "/tmp/herdr.sock" {
+		t.Errorf("tab.create env[%s] = %v, want the socket to survive", EnvSocket, env[EnvSocket])
+	}
+	if env["DIRECTOR_TOKEN"] != "t" {
+		t.Errorf("tab.create env[DIRECTOR_TOKEN] = %v, want the callback env untouched", env["DIRECTOR_TOKEN"])
+	}
+}

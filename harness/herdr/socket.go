@@ -62,13 +62,67 @@ type client struct {
 	seq  atomic.Uint64
 }
 
+// The environment herdr sets. Two different things live in here and must not be
+// confused: EnvSocket says where the server is and is set whenever herdr is
+// configured at all, in a pane or out of one, so it is never evidence of
+// anything. EnvInPane and EnvPane are set only in a pane's own shell, and are
+// what tells a process it is running inside one.
+const (
+	EnvSocket = "HERDR_SOCKET_PATH"
+	EnvInPane = "HERDR_ENV"
+	EnvPane   = "HERDR_PANE_ID"
+)
+
+// InPane reports whether this process is running inside a herdr pane, and which
+// pane that is.
+//
+// This is about the pane a process occupies, not about the herdr harness. A
+// director can drive the harness from anywhere — the adapter only needs a
+// socket — so being able to spawn into herdr says nothing about where the
+// director itself is sitting. Only the pane environment does, which is why
+// EnvSocket is not consulted here.
+//
+// The pane id may be empty even when herdr says we are in a pane. That is
+// reported as being in a pane regardless: the id is a label for a person, and
+// declining to notice the pane because the label is missing would silently turn
+// the answer into the wrong one.
+func InPane() (paneID string, ok bool) {
+	if os.Getenv(EnvInPane) != "1" {
+		return "", false
+	}
+	return os.Getenv(EnvPane), true
+}
+
+// withoutPaneEnv copies an environment without the variables that identify a
+// pane, which belong to herdr and to no caller.
+//
+// A director running in a pane empties these on the way past so that nothing it
+// spawns inherits its pane as if it were its own. herdr assigns a pane its
+// identity when it creates it, so forwarding the emptied values here could
+// overwrite what herdr sets and leave the new pane unable to recognise itself.
+// EnvSocket is deliberately left in place: it locates the server, and an agent
+// that drives herdr in turn still needs it.
+func withoutPaneEnv(env map[string]string) map[string]string {
+	if env == nil {
+		return nil
+	}
+	out := make(map[string]string, len(env))
+	for key, value := range env {
+		if key == EnvInPane || key == EnvPane {
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
 // socketPath resolves where the API socket lives: explicit configuration, then
 // herdr's own environment variable, then the default location.
 func socketPath(configured string) string {
 	if configured != "" {
 		return configured
 	}
-	if fromEnv := os.Getenv("HERDR_SOCKET_PATH"); fromEnv != "" {
+	if fromEnv := os.Getenv(EnvSocket); fromEnv != "" {
 		return fromEnv
 	}
 	home, err := os.UserHomeDir()

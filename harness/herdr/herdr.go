@@ -145,7 +145,7 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 	var tab tabCreateResult
 	err := a.rpc().call("tab.create", map[string]any{
 		"cwd":   req.Dir,
-		"env":   req.Env,
+		"env":   withoutPaneEnv(req.Env),
 		"label": label,
 		"focus": false,
 	}, &tab)

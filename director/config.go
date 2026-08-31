@@ -136,9 +136,18 @@ func findProjectRoot(startDir string) (string, bool) {
 // because validating it would mean knowing about every harness that will ever
 // exist.
 type Config struct {
-	Source    string
-	Harness   string
-	Harnesses map[string]map[string]string
+	Source  string
+	Harness string
+	// HerdrAutodetect allows a director that is itself running inside a herdr
+	// pane to place new engagements in panes beside it, in preference to
+	// Harness. On by default, because a director working in a pane almost always
+	// wants its fleet where it can see it, and off is one line away.
+	//
+	// The switch exists because this is the only placement input that comes from
+	// the environment rather than from something somebody wrote down. Ambient
+	// behaviour nobody can turn off is behaviour nobody can debug.
+	HerdrAutodetect bool
+	Harnesses       map[string]map[string]string
 }
 
 // HarnessConfig returns an adapter's configuration section.
@@ -154,7 +163,7 @@ func (c *Config) HarnessConfig(name string) map[string]string {
 // an empty file would be ceremony.
 func LoadConfig(root string) (*Config, error) {
 	path := filepath.Join(root, "director.conf")
-	config := &Config{Source: path, Harnesses: map[string]map[string]string{}}
+	config := &Config{Source: path, HerdrAutodetect: true, Harnesses: map[string]map[string]string{}}
 
 	file, err := conf.ParseFile(path)
 	if err != nil {
@@ -166,6 +175,10 @@ func LoadConfig(root string) (*Config, error) {
 	}
 
 	config.Harness = file.Global.Get("harness")
+	// Absent means on. Only the literal "false" turns it off, so a typo leaves
+	// the default in place rather than quietly disabling a feature nobody then
+	// notices is gone.
+	config.HerdrAutodetect = file.Global.Get("herdr_autodetect") != "false"
 	for _, section := range file.SectionsWithPrefix("harness.") {
 		name := strings.TrimPrefix(section.Name, "harness.")
 		values := map[string]string{}
