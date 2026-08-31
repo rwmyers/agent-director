@@ -24,6 +24,10 @@ path `go` installs binaries to and using it.
 
 When found, use the full path to execute the director.
 
+Note: If `director` is not on path, it's important to include its path location
+when executing it to ensure that optional harnesses that might be in the same
+location can be discovered.
+
 ## Step zero: attach
 
 **Do this before anything else, every session.** You are not a director until
