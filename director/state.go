@@ -148,6 +148,13 @@ func statePath(root, directorID string) string {
 // directors on the same machine contend for nothing: a write by one never
 // blocks a read by the other, and a corrupt file costs one director's fleet
 // rather than all of them.
+//
+// That last promise only holds if one unreadable file does not fail the whole
+// listing, so it does not: an unreadable state file costs its own director and
+// is reported alongside the ones that loaded, exactly as a broken workflow
+// costs that workflow. Refusing to list anything is how a single bad line takes
+// out every director on the machine, including the ones that are perfectly
+// fine.
 func ListDirectors(root string) ([]*State, error) {
 	entries, err := os.ReadDir(StateDir(root))
 	if err != nil {
@@ -158,13 +165,15 @@ func ListDirectors(root string) ([]*State, error) {
 	}
 
 	var states []*State
+	var problems []error
 	for _, entry := range entries {
 		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".state") {
 			continue
 		}
 		state, err := LoadState(filepath.Join(StateDir(root), entry.Name()))
 		if err != nil {
-			return nil, err
+			problems = append(problems, err)
+			continue
 		}
 		states = append(states, state)
 	}
@@ -174,7 +183,50 @@ func ListDirectors(root string) ([]*State, error) {
 		}
 		return states[i].DirectorID < states[j].DirectorID
 	})
-	return states, nil
+	return states, errors.Join(problems...)
+}
+
+// RepairStates joins values that were written across several lines back
+// together in every state file under a root.
+//
+// It is the way back from a state file nothing can read, without a text editor
+// and without losing what is in it. With apply false it says what it would do
+// and changes nothing. A file that already reads is never rewritten.
+//
+// It takes each file's write lock, because a director whose state is broken may
+// still have agents reporting into it, and two writers racing on the same file
+// is how a repair turns into a second corruption.
+func RepairStates(root string, apply bool) ([]*conf.RepairReport, error) {
+	entries, err := os.ReadDir(StateDir(root))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var reports []*conf.RepairReport
+	var problems []error
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".state") {
+			continue
+		}
+		path := filepath.Join(StateDir(root), entry.Name())
+
+		var report *conf.RepairReport
+		err := withStateLock(path, func() error {
+			var err error
+			report, err = conf.RepairFile(path, apply)
+			return err
+		})
+		if err != nil {
+			problems = append(problems, err)
+			continue
+		}
+		reports = append(reports, report)
+	}
+	sort.Slice(reports, func(i, j int) bool { return reports[i].Path < reports[j].Path })
+	return reports, errors.Join(problems...)
 }
 
 // LoadState reads a director's state file.

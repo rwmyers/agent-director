@@ -13,10 +13,10 @@ import (
 )
 
 func newSpawnCmd() *cobra.Command {
-	var task, title, name, dir, harnessName string
+	var task, title, name, dir, harnessName, file string
 
 	cmd := &cobra.Command{
-		Use:   "spawn <brief>",
+		Use:   "spawn [brief]",
 		Short: "Delegate a self-contained piece of work to a fresh agent",
 		Long: `Starts an independent agent conversation and returns immediately — the
 agent has not done anything yet.
@@ -25,8 +25,14 @@ The brief is the entire specification the agent receives. It shares none of
 your context, none of the original wording of whatever prompted this, and
 nothing any other engagement has found. Write it for a competent stranger:
 the goal, what "done" looks like, what not to touch, and what to report back.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Before open(), so an unreadable brief costs nothing: a spawn is
+			// the most expensive thing here to half-do.
+			brief, err := textArg(args, 0, file)
+			if err != nil {
+				return err
+			}
 			d, err := open()
 			if err != nil {
 				return err
@@ -35,7 +41,7 @@ the goal, what "done" looks like, what not to touch, and what to report back.`,
 				Task:    task,
 				Title:   title,
 				Name:    name,
-				Brief:   args[0],
+				Brief:   brief,
 				Dir:     dir,
 				Harness: harnessName,
 			})
@@ -60,6 +66,7 @@ the goal, what "done" looks like, what not to touch, and what to report back.`,
 	cmd.Flags().StringVar(&name, "name", "", "how the harness should label this conversation in its own UI (default: the title)")
 	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the agent (default: cwd)")
 	cmd.Flags().StringVar(&harnessName, "harness", "", "override the workflow's placement")
+	cmd.Flags().StringVar(&file, "file", "", "read the brief from a file, or from standard input with -")
 	_ = cmd.MarkFlagRequired("task")
 	return cmd
 }
@@ -173,20 +180,28 @@ func short(d time.Duration) string {
 }
 
 func newSendCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "send <engagement> <text>",
+	var file string
+
+	cmd := &cobra.Command{
+		Use:   "send <engagement> [text]",
 		Short: "Give a running engagement more instruction",
 		Long: `Delivers text into an agent's conversation. It does not wait for a
 reply — use "director status" and "director read" to see what came of it.`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			text, err := textArg(args, 1, file)
+			if err != nil {
+				return err
+			}
 			d, err := open()
 			if err != nil {
 				return err
 			}
-			return d.Send(cmd.Context(), args[0], args[1])
+			return d.Send(cmd.Context(), args[0], text)
 		},
 	}
+	cmd.Flags().StringVar(&file, "file", "", "read the text from a file, or from standard input with -")
+	return cmd
 }
 
 func newNudgeCmd() *cobra.Command {
@@ -210,19 +225,25 @@ gone quiet, and doing something about it, is the director's job.`,
 }
 
 func newAnswerCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "answer <ask> <text>",
+	var file string
+
+	cmd := &cobra.Command{
+		Use:   "answer <ask> [text]",
 		Short: "Answer a question an agent is blocked on",
 		Long: `Unblocks an agent that called "director ask --wait". Until this is run
 the agent is stopped and doing nothing, so answer promptly — a blocked agent
 burns wall-clock and no tokens, and nobody else will notice.`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			text, err := textArg(args, 1, file)
+			if err != nil {
+				return err
+			}
 			d, err := open()
 			if err != nil {
 				return err
 			}
-			ask, err := d.Answer(args[0], args[1])
+			ask, err := d.Answer(args[0], text)
 			if err != nil {
 				return err
 			}
@@ -233,6 +254,8 @@ burns wall-clock and no tokens, and nobody else will notice.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&file, "file", "", "read the answer from a file, or from standard input with -")
+	return cmd
 }
 
 func newStopCmd() *cobra.Command {
@@ -256,23 +279,31 @@ resumable.`,
 }
 
 func newNoteCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "note <engagement> <text>",
+	var file string
+
+	cmd := &cobra.Command{
+		Use:   "note <engagement> [text]",
 		Short: "Record something about an engagement you will need later",
 		Long: `Write the note when you form the thought, not when you need it.
 
 Your own context will be compacted; notes attached to an engagement will not.
 Use it for why you spawned this, what you decided, what you are waiting on, and
 what you promised somebody.`,
-		Args: cobra.ExactArgs(2),
+		Args: cobra.RangeArgs(1, 2),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			text, err := textArg(args, 1, file)
+			if err != nil {
+				return err
+			}
 			d, err := open()
 			if err != nil {
 				return err
 			}
-			return d.Note(args[0], args[1])
+			return d.Note(args[0], text)
 		},
 	}
+	cmd.Flags().StringVar(&file, "file", "", "read the note from a file, or from standard input with -")
+	return cmd
 }
 
 // engagementFromEnv reads the identity injected into a spawned agent.
@@ -327,9 +358,10 @@ about you, and silence is what makes it think you are stuck.`,
 func newAskCmd() *cobra.Command {
 	var wait bool
 	var timeout time.Duration
+	var file string
 
 	cmd := &cobra.Command{
-		Use:   "ask <question>",
+		Use:   "ask [question]",
 		Short: "Ask your director for a decision (run this as an agent)",
 		Long: `For an agent running as an engagement, not for a director.
 
@@ -340,8 +372,12 @@ somebody answers and prints the answer, so it can be used directly:
 
 Asking marks you as blocked, which is how anyone finds out you are waiting.
 Silently picking an option instead is how the wrong thing gets done quietly.`,
-		Args: cobra.ExactArgs(1),
+		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			question, err := textArg(args, 0, file)
+			if err != nil {
+				return err
+			}
 			id, token, err := engagementFromEnv()
 			if err != nil {
 				return err
@@ -350,7 +386,7 @@ Silently picking an option instead is how the wrong thing gets done quietly.`,
 			if err != nil {
 				return err
 			}
-			ask, err := d.Ask(id, token, args[0])
+			ask, err := d.Ask(id, token, question)
 			if err != nil {
 				return err
 			}
@@ -381,5 +417,6 @@ Silently picking an option instead is how the wrong thing gets done quietly.`,
 	}
 	cmd.Flags().BoolVar(&wait, "wait", false, "block until answered and print the answer")
 	cmd.Flags().DurationVar(&timeout, "timeout", time.Hour, "how long to wait")
+	cmd.Flags().StringVar(&file, "file", "", "read the question from a file, or from standard input with -")
 	return cmd
 }
