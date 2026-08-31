@@ -30,7 +30,7 @@ type Adapter struct {
 	Now func() time.Time
 
 	client *client
-	// sleep is how the shell-readiness wait passes time, for tests.
+	// sleep is how the readiness waits pass time, for tests.
 	sleep func(time.Duration)
 }
 
@@ -232,11 +232,11 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 
 // discardTab closes a tab this adapter created but could not use.
 //
-// Nothing downstream can do it instead. A failed spawn deliberately keeps its
-// state record, but that record's Ref is empty — there is no pane id in it — so
-// neither stopping nor removing the engagement has anything to close, and the
-// tab would sit in herdr's session for good. The adapter is the last place that
-// still knows the id.
+// Nothing downstream can do it instead. A spawn the adapter reports as failed
+// leaves no engagement record at all, and the result it returns carries no
+// pane id, so there is nothing anywhere else that names this tab: it would sit
+// in herdr's session for good. The adapter is the last place that still knows
+// the id, which is why closing it is not optional here.
 //
 // Any failure to close is dropped: the caller is being told why the spawn
 // failed, and burying that under a cleanup error would replace the answer with

@@ -567,11 +567,10 @@ func TestALiveAgentIsNotReportedAsStillStarting(t *testing.T) {
 func TestAFailedSpawnDoesNotLeaveATabBehind(t *testing.T) {
 	t.Parallel()
 	// The tab already exists by the time anything can go wrong, and nothing
-	// downstream can reach it: a failed spawn keeps its state record on purpose,
-	// but that record's Ref is empty, so neither stopping nor removing the
-	// engagement has a pane to close. The adapter is the last thing that still
-	// knows the tab id, so if it walks away the tab is in herdr's session for
-	// good.
+	// downstream can reach it: a spawn the adapter reports as failed leaves no
+	// engagement record, and returns no pane id, so nothing anywhere else names
+	// this tab. The adapter is the last thing that still knows the tab id, so if
+	// it walks away the tab is in herdr's session for good.
 	cases := []struct {
 		name    string
 		failing string
