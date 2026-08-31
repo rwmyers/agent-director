@@ -585,11 +585,12 @@ func (a *Adapter) observe(agent agentInfo) harness.Observation {
 // otherwise read as ordinary — and sending a brief into a shell that is not yet
 // an agent loses it silently.
 //
-// launch_pending is the whole test. interactive_ready is not read, even though
-// it names exactly the thing being asked about, because herdr omits it from a
-// live agent: an agent working away in a pane reports neither field, so
-// requiring interactive_ready pins every herdr engagement at "starting" for its
-// entire life and the director never sees any of them begin.
+// launch_pending is the whole test: herdr sets it only while a pane is waiting
+// for its agent, and drops it once any agent has settled. interactive_ready is
+// not read despite naming exactly the thing asked about — herdr publishes it
+// only for agents it launched via agent.start, never for one started by hand in
+// a pane. Keying on it would pin those at "starting" for life, and the director
+// would never see them begin.
 func lifecycleFor(agent agentInfo) harness.Lifecycle {
 	if agent.LaunchPending {
 		return harness.LifecycleStarting
