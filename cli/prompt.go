@@ -23,9 +23,16 @@ type promptField interface {
 // works from a script or a pipe — which matters here because `director install`
 // is exactly the sort of thing somebody puts in a setup script.
 type prompter struct {
-	in       io.Reader
-	out      io.Writer
+	in  io.Reader
+	out io.Writer
+	// terminal is whether stdin is a terminal. It decides both whether a
+	// question can honestly be asked at all and whether huh renders its full
+	// TUI.
 	terminal bool
+	// accessible forces huh's line-based mode even on a terminal. Only a test
+	// sets it, so that the asking path can be exercised against scripted input
+	// without a pty.
+	accessible bool
 }
 
 func newPrompter() prompter {
@@ -63,7 +70,7 @@ func (b *byteReader) Read(p []byte) (int, error) {
 }
 
 func (p prompter) run(field promptField) error {
-	if !p.terminal {
+	if !p.terminal || p.accessible {
 		return field.RunAccessible(p.out, &byteReader{r: p.in})
 	}
 	// The field's own Run() builds a form with the help footer switched off,

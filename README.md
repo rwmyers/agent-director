@@ -30,7 +30,7 @@ they belong in version control, and no agent should be making them.
 ```sh
 make install
 cd your-project
-director init                       # writes .director/ with starter workflows
+director init                       # asks which harness, writes .director/ with starter workflows
 director install                    # put the director skills where your harness finds them
 $EDITOR .director/workflows/*.conf  # make the task types yours
 ```

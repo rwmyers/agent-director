@@ -9,6 +9,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
+	"github.com/charmbracelet/huh"
 	"github.com/rwmyers/agent-director/director"
 	"github.com/rwmyers/agent-director/harness"
 	"github.com/spf13/cobra"
@@ -25,7 +26,7 @@ import (
 var starters embed.FS
 
 func newInitCmd() *cobra.Command {
-	var workflow, name string
+	var workflow, name, harnessName string
 	var force, global bool
 
 	cmd := &cobra.Command{
@@ -33,6 +34,10 @@ func newInitCmd() *cobra.Command {
 		Short: "Register a director in this configuration root",
 		Long: `Creates a configuration root if there is not one already, copies the
 starter workflows into it, and registers a director bound to one of them.
+
+Asks which harness this project spawns into and writes it into director.conf.
+Pass --harness to answer up front, which is what a setup script wants; without
+a terminal to ask on, that flag is required rather than guessed at.
 
 The workflow binding is permanent. A director's engagements are validated
 against its workflow's task types and progress vocabularies, so switching it
@@ -43,7 +48,31 @@ later would leave a live fleet that nothing could describe.`,
 			if err != nil {
 				return err
 			}
-			created, err := materialiseStarters(roots.Primary, force)
+			pending, err := pendingStarters(roots.Primary, force)
+			if err != nil {
+				return err
+			}
+
+			// The harness is settled before anything is written, because it is
+			// the one starter value that is a decision rather than a copy, and
+			// half a root written before the question is refused would leave
+			// somebody to work out what they now have.
+			chosenHarness := ""
+			if writesStarterConfig(pending) {
+				ask := initPrompter()
+				chosenHarness, err = resolveHarness(harnessName, ask)
+				if err != nil {
+					return err
+				}
+			} else if harnessName != "" {
+				// Said rather than obeyed: this root's director.conf is the
+				// owner's file, and silently rewriting the key they set is not
+				// init's business.
+				fmt.Fprintf(os.Stderr, "director: --harness %s ignored: %s already exists and was left as it is\n",
+					harnessName, filepath.Join(roots.Primary, "director.conf"))
+			}
+
+			created, err := writeStarters(pending, chosenHarness)
 			if err != nil {
 				return err
 			}
@@ -110,6 +139,7 @@ later would leave a live fleet that nothing could describe.`,
 		},
 	}
 	cmd.Flags().StringVar(&workflow, "workflow", "", "workflow to bind this director to (default: default)")
+	cmd.Flags().StringVar(&harnessName, "harness", "", "harness to spawn on, skipping the question (default: ask)")
 	cmd.Flags().StringVar(&name, "name", "", "human label for this director")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite starter files that already exist")
 	cmd.Flags().BoolVar(&global, "global", false, "set up in the user root rather than this project")
@@ -142,22 +172,44 @@ func initRoots(global bool) (director.Roots, error) {
 	return director.ResolveRoots(filepath.Join(wd, director.ProjectDirName), wd)
 }
 
-// materialiseStarters copies the embedded starters into a root.
-//
-// Only into a root that has no workflows yet, unless forced. Skipping files
-// that already exist is not enough: a starter the user deliberately deleted
-// would come back on the next init, quietly reintroducing a workflow they had
-// removed — and a second workflow is not inert, it makes creating a director
-// ambiguous. An established root is left exactly as its owner left it.
-func materialiseStarters(root string, force bool) ([]string, error) {
-	var written []string
+// starterConfigPath is the one starter whose contents are decided at init time
+// rather than copied verbatim.
+const starterConfigPath = "starters/director.conf"
 
+// harnessPlaceholder is what the chosen harness is substituted for.
+const harnessPlaceholder = "{{harness}}"
+
+// initPrompter is the prompter `director init` asks with. Only a test replaces
+// it, so that the asking path can be driven from scripted input.
+var initPrompter = newPrompter
+
+// starterFile is one starter this init will write: where it comes from in the
+// embedded tree, and where it lands.
+type starterFile struct {
+	source string
+	target string
+}
+
+// pendingStarters works out which starters this init will write, without
+// writing any of them.
+//
+// Deciding first is what lets init ask its questions before it touches the
+// disk, and it keeps the skip rules in one place rather than in one function
+// that decides and another that guesses the same thing again.
+//
+// Only a root that has no workflows yet gets starters, unless forced. Skipping
+// files that already exist is not enough: a starter the user deliberately
+// deleted would come back on the next init, quietly reintroducing a workflow
+// they had removed — and a second workflow is not inert, it makes creating a
+// director ambiguous. An established root is left exactly as its owner left it.
+func pendingStarters(root string, force bool) ([]starterFile, error) {
 	if !force {
 		if entries, err := os.ReadDir(director.WorkflowsDir(root)); err == nil && len(entries) > 0 {
 			return nil, nil
 		}
 	}
 
+	var pending []starterFile
 	err := fs.WalkDir(starters, "starters", func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -171,20 +223,95 @@ func materialiseStarters(root string, force bool) ([]string, error) {
 		if _, statErr := os.Stat(target); statErr == nil && !force {
 			return nil
 		}
-		body, err := starters.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
-			return err
-		}
-		if err := os.WriteFile(target, body, 0o644); err != nil { // #nosec G306 -- config is meant to be readable
-			return err
-		}
-		written = append(written, target)
+		pending = append(pending, starterFile{source: path, target: target})
 		return nil
 	})
-	return written, err
+	return pending, err
+}
+
+// writesStarterConfig reports whether the core configuration is among the
+// starters about to be written — which is to say, whether there is anywhere for
+// an answer about the harness to go.
+func writesStarterConfig(pending []starterFile) bool {
+	for _, file := range pending {
+		if file.source == starterConfigPath {
+			return true
+		}
+	}
+	return false
+}
+
+// writeStarters copies the pending starters into the root, substituting the
+// chosen harness into the core configuration on the way past.
+func writeStarters(pending []starterFile, chosenHarness string) ([]string, error) {
+	var written []string
+	for _, file := range pending {
+		body, err := starters.ReadFile(file.source)
+		if err != nil {
+			return written, err
+		}
+		if file.source == starterConfigPath {
+			if chosenHarness == "" {
+				return written, fmt.Errorf("internal: writing %s with no harness chosen", file.target)
+			}
+			body = []byte(strings.ReplaceAll(string(body), harnessPlaceholder, chosenHarness))
+		}
+		if err := os.MkdirAll(filepath.Dir(file.target), 0o755); err != nil {
+			return written, err
+		}
+		if err := os.WriteFile(file.target, body, 0o644); err != nil { // #nosec G306 -- config is meant to be readable
+			return written, err
+		}
+		written = append(written, file.target)
+	}
+	return written, nil
+}
+
+// resolveHarness decides which harness a new root spawns into: the flag, or the
+// question.
+//
+// Asking is the point. The harness is the one part of a root's configuration
+// that nothing else can infer, and a default written on somebody's behalf is a
+// decision they never made and will not think to look for. So there is no
+// fallback: without a terminal to ask on and without the flag, this refuses and
+// names the choices, because writing a harness nobody picked is the defect it
+// exists to prevent.
+//
+// The choices are the adapter registry, so what is offered is exactly what this
+// binary can drive — including plugins found on $PATH — and there is no second
+// list to drift from the first.
+func resolveHarness(flag string, ask prompter) (string, error) {
+	names := harness.Names()
+
+	if flag != "" {
+		if _, err := harness.Lookup(flag); err != nil {
+			return "", fmt.Errorf("unknown harness %q (valid: %s)", flag, strings.Join(names, ", "))
+		}
+		return flag, nil
+	}
+	if len(names) == 0 {
+		return "", fmt.Errorf("this build of director has no harness adapters registered, so there is nothing to spawn into")
+	}
+	if !ask.terminal {
+		return "", fmt.Errorf("no harness chosen and no terminal to ask on: pass --harness (valid: %s)",
+			strings.Join(names, ", "))
+	}
+
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		options = append(options, huh.NewOption(name, name))
+	}
+	chosen, err := ask.selectOne(
+		"Which harness should this project spawn engagements into?",
+		"Written to director.conf as the default placement. A workflow, a task, or `director spawn --harness` still overrides it, and the file is yours to edit afterwards.",
+		options)
+	if err != nil {
+		return "", err
+	}
+	if chosen == "" {
+		return "", fmt.Errorf("no harness chosen (valid: %s)", strings.Join(names, ", "))
+	}
+	return chosen, nil
 }
 
 func newWhereCmd() *cobra.Command {
