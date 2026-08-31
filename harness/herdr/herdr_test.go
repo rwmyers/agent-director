@@ -138,6 +138,18 @@ func agentListReply(agents ...map[string]any) map[string]any {
 	return map[string]any{"type": "agent_list", "agents": agents}
 }
 
+// agentWaitReply is what agent.wait answers with: one agent nested under
+// "agent", not its fields at the top level.
+func agentWaitReply(agent map[string]any) map[string]any {
+	return map[string]any{"type": "agent_info", "agent": agent}
+}
+
+// waitTimeoutReply is what agent.wait answers with when it was asked to watch
+// for a change and none came. herdr calls that a timeout; it is not a failure.
+func waitTimeoutReply() *responseError {
+	return &responseError{Code: "timeout", Message: "timed out waiting for agent status"}
+}
+
 // promptableAgent is an agent herdr will accept a prompt for.
 //
 // It reports neither launch_pending nor interactive_ready, because that is the
@@ -279,7 +291,7 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	// that forced the engagement ID and the harness Ref apart.
 	server := newFakeServer(t, map[string]any{
 		"tab.create": tabCreatedReply("t1", "p7"),
-		"agent.list": agentListReply(promptableAgent("p7")),
+		"agent.wait": agentWaitReply(promptableAgent("p7")),
 	})
 
 	result, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
@@ -301,9 +313,9 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	for i, call := range server.calls {
 		methods[i] = call.Method
 	}
-	// agent.list sits between the two because herdr will not accept a prompt for
-	// an agent it has not yet been told is live.
-	want := []string{"tab.create", "agent.start", "agent.list", "agent.prompt"}
+	// agent.wait sits between the two because herdr will not accept a prompt for
+	// an agent whose launch it has not settled.
+	want := []string{"tab.create", "agent.start", "agent.wait", "agent.prompt"}
 	if strings.Join(methods, ",") != strings.Join(want, ",") {
 		t.Errorf("Spawn() called %v, want %v", methods, want)
 	}
@@ -329,7 +341,7 @@ func TestSpawnWaitsForTheNewPaneToBecomeAShell(t *testing.T) {
 				paneBusyReply(),
 				map[string]any{"type": "agent_started"},
 			}},
-			"agent.list": agentListReply(promptableAgent("p7")),
+			"agent.wait": agentWaitReply(promptableAgent("p7")),
 		})
 		adapter := server.adapter()
 		waits := 0
@@ -468,10 +480,10 @@ func TestSpawnWaitsForTheAgentBeforeDeliveringTheBrief(t *testing.T) {
 		t.Parallel()
 		server := newFakeServer(t, map[string]any{
 			"tab.create": tabCreatedReply("t1", "p7"),
-			"agent.list": &sequence{replies: []any{
-				agentListReply(launchingAgent("p7")),
-				agentListReply(launchingAgent("p7")),
-				agentListReply(promptableAgent("p7")),
+			"agent.wait": &sequence{replies: []any{
+				agentWaitReply(launchingAgent("p7")),
+				agentWaitReply(launchingAgent("p7")),
+				agentWaitReply(promptableAgent("p7")),
 			}},
 		})
 		adapter := server.adapter()
@@ -491,13 +503,36 @@ func TestSpawnWaitsForTheAgentBeforeDeliveringTheBrief(t *testing.T) {
 		// The brief has to go out after the wait, not before it.
 		var order []string
 		for _, call := range server.calls {
-			if call.Method == "agent.list" || call.Method == "agent.prompt" {
+			if call.Method == "agent.wait" || call.Method == "agent.prompt" {
 				order = append(order, call.Method)
 			}
 		}
-		want := []string{"agent.list", "agent.list", "agent.list", "agent.prompt"}
+		want := []string{"agent.wait", "agent.wait", "agent.wait", "agent.prompt"}
 		if strings.Join(order, ",") != strings.Join(want, ",") {
 			t.Errorf("Spawn() called %v, want %v", order, want)
+		}
+	})
+
+	t.Run("a wait that runs out is a tick, not a failure", func(t *testing.T) {
+		t.Parallel()
+		// agent.wait answers "nothing changed" with a timeout error. Treating
+		// that as the server failing would abandon the spawn on the one reply
+		// that means the wait is doing its job.
+		server := newFakeServer(t, map[string]any{
+			"tab.create": tabCreatedReply("t1", "p7"),
+			"agent.wait": &sequence{replies: []any{
+				waitTimeoutReply(),
+				agentWaitReply(promptableAgent("p7")),
+			}},
+		})
+		adapter := server.adapter()
+		adapter.sleep = func(time.Duration) {}
+
+		if _, err := adapter.Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		}); err != nil {
+			t.Fatalf("Spawn() = %v, want a timed-out wait retried rather than reported", err)
 		}
 	})
 
@@ -509,7 +544,7 @@ func TestSpawnWaitsForTheAgentBeforeDeliveringTheBrief(t *testing.T) {
 		// looks like herdr misbehaving and gets investigated all over again.
 		server := newFakeServer(t, map[string]any{
 			"tab.create": tabCreatedReply("t1", "p7"),
-			"agent.list": agentListReply(launchingAgent("p7")),
+			"agent.wait": agentWaitReply(launchingAgent("p7")),
 		})
 		adapter := server.adapter()
 		adapter.sleep = func(time.Duration) {}
@@ -528,6 +563,123 @@ func TestSpawnWaitsForTheAgentBeforeDeliveringTheBrief(t *testing.T) {
 			if call.Method == "agent.prompt" {
 				t.Error("Spawn() sent the brief to an agent herdr had not reported ready")
 			}
+		}
+		closed := 0
+		for _, call := range server.calls {
+			if call.Method == "tab.close" {
+				closed++
+			}
+		}
+		if closed != 1 {
+			t.Errorf("Spawn() made %d tab.close calls, want exactly 1", closed)
+		}
+	})
+}
+
+func TestSpawnWaitsOnTheAgentRatherThanPollingTheAgentList(t *testing.T) {
+	t.Parallel()
+	// The defect this exists for. herdr settles a pending launch when something
+	// waits on that agent; agent.list answers from the state it has already
+	// published and settles nothing. A spawn that polls agent.list therefore
+	// reads launch_pending forever against a server where an agent.wait against
+	// the same pane would clear it in about three seconds — which is what a
+	// director sees as every herdr spawn timing out while the agent sits at its
+	// prompt, visibly ready.
+	//
+	// So agent.list is wired here to the answer that never clears, and only
+	// agent.wait to the one that does.
+	server := newFakeServer(t, map[string]any{
+		"tab.create": tabCreatedReply("t1", "p7"),
+		"agent.list": agentListReply(launchingAgent("p7")),
+		"agent.wait": agentWaitReply(promptableAgent("p7")),
+	})
+	adapter := server.adapter()
+	adapter.sleep = func(time.Duration) {}
+
+	if _, err := adapter.Spawn(context.Background(), harness.SpawnRequest{
+		ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+		Allow: harness.AllCapabilities,
+	}); err != nil {
+		t.Fatalf("Spawn() = %v, want readiness taken from agent.wait", err)
+	}
+
+	prompted := false
+	for _, call := range server.calls {
+		if call.Method == "agent.list" {
+			t.Error("Spawn() polled agent.list for readiness; that view never settles a pending launch")
+		}
+		if call.Method == "agent.prompt" {
+			prompted = true
+		}
+	}
+	if !prompted {
+		t.Error("Spawn() never delivered the brief")
+	}
+}
+
+func TestSpawnConfirmsTheBriefWasTaken(t *testing.T) {
+	t.Parallel()
+	// herdr accepting a prompt is not the agent having taken it. A settled
+	// launch means herdr's bookkeeping is done; the agent's own input can be a
+	// moment behind, swallow the paste, and leave the box empty. The engagement
+	// is then recorded as running and has been told nothing, which looks exactly
+	// like an agent thinking until somebody opens the pane.
+
+	t.Run("herdr is asked to watch for the agent to act", func(t *testing.T) {
+		t.Parallel()
+		server := newFakeServer(t, map[string]any{
+			"tab.create": tabCreatedReply("t1", "p7"),
+			"agent.wait": agentWaitReply(promptableAgent("p7")),
+		})
+
+		if _, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		}); err != nil {
+			t.Fatalf("Spawn() = %v, want no error", err)
+		}
+
+		var prompt map[string]any
+		for _, call := range server.calls {
+			if call.Method == "agent.prompt" {
+				prompt, _ = call.Params.(map[string]any)
+			}
+		}
+		if prompt == nil {
+			t.Fatal("Spawn() made no agent.prompt call")
+		}
+		wait, ok := prompt["wait"].(map[string]any)
+		if !ok {
+			t.Fatalf("agent.prompt wait = %v, want herdr asked to confirm the agent acted on the brief", prompt["wait"])
+		}
+		until, ok := wait["until"].([]any)
+		if !ok || len(until) == 0 {
+			t.Fatalf("agent.prompt wait.until = %v, want the statuses that mean the text arrived", wait["until"])
+		}
+		for _, status := range until {
+			if status == "idle" {
+				t.Error("agent.prompt wait.until includes idle, which is the state a swallowed prompt leaves the agent in")
+			}
+		}
+	})
+
+	t.Run("an agent that never acts on it fails the spawn", func(t *testing.T) {
+		t.Parallel()
+		// Reporting this as a success is the expensive outcome: the director
+		// supervises an engagement that was never told anything, and only finds
+		// out by reading the pane.
+		server := newFakeServer(t, map[string]any{
+			"tab.create":   tabCreatedReply("t1", "p7"),
+			"agent.wait":   agentWaitReply(promptableAgent("p7")),
+			"agent.prompt": &responseError{Code: "agent_prompt_stalled", Message: "no status change"},
+		})
+
+		_, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		})
+		if err == nil {
+			t.Fatal("Spawn() = nil error, want a brief that never took reported rather than recorded as running")
 		}
 		closed := 0
 		for _, call := range server.calls {
@@ -584,7 +736,7 @@ func TestAFailedSpawnDoesNotLeaveATabBehind(t *testing.T) {
 			t.Parallel()
 			server := newFakeServer(t, map[string]any{
 				"tab.create":     tabCreatedReply("t1", "p7"),
-				"agent.list":     agentListReply(promptableAgent("p7")),
+				"agent.wait":     agentWaitReply(promptableAgent("p7")),
 				testCase.failing: &responseError{Code: "internal", Message: "no"},
 			})
 
