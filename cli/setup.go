@@ -57,22 +57,21 @@ later would leave a live fleet that nothing could describe.`,
 			// the one starter value that is a decision rather than a copy, and
 			// half a root written before the question is refused would leave
 			// somebody to work out what they now have.
-			chosenHarness := ""
+			//
+			// Either way the question gets asked. Which of the two branches
+			// runs decides whether the answer is written or reported, never
+			// whether it is put.
+			effectiveHarness := ""
 			if writesStarterConfig(pending) {
-				ask := initPrompter()
-				chosenHarness, err = resolveHarness(harnessName, ask)
-				if err != nil {
-					return err
-				}
-			} else if harnessName != "" {
-				// Said rather than obeyed: this root's director.conf is the
-				// owner's file, and silently rewriting the key they set is not
-				// init's business.
-				fmt.Fprintf(os.Stderr, "director: --harness %s ignored: %s already exists and was left as it is\n",
-					harnessName, filepath.Join(roots.Primary, "director.conf"))
+				effectiveHarness, err = resolveHarness(harnessName, initPrompter())
+			} else {
+				effectiveHarness, err = reviewHarness(roots.Primary, harnessName, initPrompter())
+			}
+			if err != nil {
+				return err
 			}
 
-			created, err := writeStarters(pending, chosenHarness)
+			created, err := writeStarters(pending, effectiveHarness)
 			if err != nil {
 				return err
 			}
@@ -102,6 +101,7 @@ later would leave a live fleet that nothing could describe.`,
 					"name":     state.Name,
 					"workflow": state.Workflow,
 					"root":     roots.Primary,
+					"harness":  effectiveHarness,
 				})
 			}
 			fmt.Printf("\ndirector %s (%s) initialised for workflow %q\n", state.DirectorID, state.Name, state.Workflow)
@@ -148,15 +148,22 @@ later would leave a live fleet that nothing could describe.`,
 
 // initRoots decides where `director init` sets things up.
 //
-// Unlike every other command, init defaults to creating a project root here
-// rather than resolving an existing one. Setting up is the act of making a
-// project a director project, and quietly landing that configuration in the
-// user root instead — which is what plain resolution does when no .director
-// exists yet — produces a global setup somebody asked for locally, with no
-// indication it happened.
+// Unlike every other command, init creates rather than resolves, and that
+// difference is the whole of this function. Resolution deliberately walks up —
+// a command run in a subdirectory should find its project — and DIRECTOR_ROOT
+// is injected into every spawned agent's environment so a callback finds the
+// root it came from. Both are right for reading. For creating they are a trap:
+// a plain `director init` in a subdirectory, in a sibling worktree, or in an
+// agent shell would register a director in whichever fleet happened to be
+// above it. Nothing said so, and the root it landed in was then left with two
+// directors of the same name, which makes every later command refuse to run
+// until somebody passes --director.
 //
-// An explicit --config still wins, and an existing .director at or above the
-// working directory is reused rather than nested inside itself.
+// So init uses only a root it was told to use: --config, --global, or a
+// .director in the working directory itself — that last being the ordinary
+// "add another director to the project I am standing in". A root merely found
+// somewhere else is reported and not adopted, with both commands that would
+// resolve the ambiguity, because the one thing init must not do is pick.
 func initRoots(global bool) (director.Roots, error) {
 	if opts.config != "" || global {
 		return resolveRoots()
@@ -165,11 +172,42 @@ func initRoots(global bool) (director.Roots, error) {
 	if err != nil {
 		return director.Roots{}, err
 	}
-	// Reuse a project root that already exists, wherever it is above us.
-	if found, err := director.ResolveRoots("", wd); err == nil && found.Layers[0].Kind == director.LayerProject {
-		return found, nil
+	here := filepath.Join(wd, director.ProjectDirName)
+
+	if info, statErr := os.Stat(here); statErr == nil && info.IsDir() {
+		return director.ResolveRoots(here, wd)
 	}
-	return director.ResolveRoots(filepath.Join(wd, director.ProjectDirName), wd)
+	if found, findErr := director.ResolveRoots("", wd); findErr == nil &&
+		found.Layers[0].Kind == director.LayerProject {
+		return director.Roots{}, foundElsewhere(found.Primary, wd, here)
+	}
+	return director.ResolveRoots(here, wd)
+}
+
+// foundElsewhere is what init says instead of adopting somebody else's root.
+func foundElsewhere(found, wd, here string) error {
+	because := "found above this directory"
+	if env := os.Getenv(director.EnvRoot); env != "" {
+		if absolute, err := filepath.Abs(env); err == nil && absolute == found {
+			because = "named by $" + director.EnvRoot + ", which is set in every agent director spawns"
+		}
+	}
+	return fmt.Errorf(`a configuration root already exists, but not in this directory:
+
+  found:             %s
+                     (%s)
+  working directory: %s
+
+init will not adopt a root it was not pointed at: a director registered in a
+fleet you are not looking at is invisible to you and ambiguous to everyone
+else. Say which you meant:
+
+  director init --config %s
+      add a director to the root that already exists
+
+  director init --config %s
+      make this directory a project root of its own`,
+		found, because, wd, found, here)
 }
 
 // starterConfigPath is the one starter whose contents are decided at init time
@@ -267,8 +305,8 @@ func writeStarters(pending []starterFile, chosenHarness string) ([]string, error
 	return written, nil
 }
 
-// resolveHarness decides which harness a new root spawns into: the flag, or the
-// question.
+// resolveHarness decides which harness a new root spawns into: the flag, or
+// the question.
 //
 // Asking is the point. The harness is the one part of a root's configuration
 // that nothing else can infer, and a default written on somebody's behalf is a
@@ -276,18 +314,11 @@ func writeStarters(pending []starterFile, chosenHarness string) ([]string, error
 // fallback: without a terminal to ask on and without the flag, this refuses and
 // names the choices, because writing a harness nobody picked is the defect it
 // exists to prevent.
-//
-// The choices are the adapter registry, so what is offered is exactly what this
-// binary can drive — including plugins found on $PATH — and there is no second
-// list to drift from the first.
 func resolveHarness(flag string, ask prompter) (string, error) {
 	names := harness.Names()
 
 	if flag != "" {
-		if _, err := harness.Lookup(flag); err != nil {
-			return "", fmt.Errorf("unknown harness %q (valid: %s)", flag, strings.Join(names, ", "))
-		}
-		return flag, nil
+		return flag, checkHarness(flag)
 	}
 	if len(names) == 0 {
 		return "", fmt.Errorf("this build of director has no harness adapters registered, so there is nothing to spawn into")
@@ -297,14 +328,7 @@ func resolveHarness(flag string, ask prompter) (string, error) {
 			strings.Join(names, ", "))
 	}
 
-	options := make([]huh.Option[string], 0, len(names))
-	for _, name := range names {
-		options = append(options, huh.NewOption(name, name))
-	}
-	chosen, err := ask.selectOne(
-		"Which harness should this project spawn engagements into?",
-		"Written to director.conf as the default placement. A workflow, a task, or `director spawn --harness` still overrides it, and the file is yours to edit afterwards.",
-		options)
+	chosen, err := askHarness(ask, "")
 	if err != nil {
 		return "", err
 	}
@@ -312,6 +336,95 @@ func resolveHarness(flag string, ask prompter) (string, error) {
 		return "", fmt.Errorf("no harness chosen (valid: %s)", strings.Join(names, ", "))
 	}
 	return chosen, nil
+}
+
+// checkHarness rejects a name no adapter answers to.
+func checkHarness(name string) error {
+	if _, err := harness.Lookup(name); err != nil {
+		return fmt.Errorf("unknown harness %q (valid: %s)", name, strings.Join(harness.Names(), ", "))
+	}
+	return nil
+}
+
+// askHarness puts the question, through the same prompter `director install`
+// asks with. One mechanism, so there is nothing to drift.
+//
+// The choices are the adapter registry, so what is offered is exactly what this
+// binary can drive — including plugins found on $PATH — and there is no second
+// list to fall out of step with the first.
+func askHarness(ask prompter, current string) (string, error) {
+	names := harness.Names()
+	options := make([]huh.Option[string], 0, len(names))
+	for _, name := range names {
+		options = append(options, huh.NewOption(name, name))
+	}
+
+	title := "Which harness should this project spawn engagements into?"
+	description := "Written to director.conf as the default placement. A workflow, a task, or `director spawn --harness` still overrides it, and the file is yours to edit afterwards."
+	if current != "" {
+		title = fmt.Sprintf("This root spawns on %s. Which harness should it use?", current)
+		description = "Its director.conf was written by hand, so init will not rewrite it. Answering says what belongs in it."
+	}
+	return ask.selectOne(title, description, options)
+}
+
+// reviewHarness is the harness question for a root that already has a
+// director.conf.
+//
+// The answer is not applied, and that is deliberate: the file is hand-edited
+// and commented, and init reaching into it to change a key would be init
+// editing somebody's configuration behind them. But it is still asked, and
+// still answered in full. Saying nothing is what let a director be registered
+// against a harness nobody had picked, which is the whole complaint; declining
+// to write is a different thing from declining to speak.
+//
+// Returns the harness the root actually spawns on, which is what it spawned on
+// before init ran.
+func reviewHarness(root, flag string, ask prompter) (string, error) {
+	path := filepath.Join(root, "director.conf")
+	config, err := director.LoadConfig(root)
+	if err != nil {
+		return "", err
+	}
+	current := config.Harness
+
+	// A machine reading --json is not being asked anything, and prose on stdout
+	// would corrupt what it is parsing. The harness is in the JSON instead.
+	if opts.asJSON {
+		return current, nil
+	}
+
+	chosen := flag
+	switch {
+	case chosen != "":
+		if err := checkHarness(chosen); err != nil {
+			return "", err
+		}
+	case ask.terminal && len(harness.Names()) > 0:
+		if chosen, err = askHarness(ask, current); err != nil {
+			return "", err
+		}
+	}
+
+	fmt.Printf("\n")
+	switch {
+	case chosen == "" && current == "":
+		fmt.Printf("%s sets no harness, so every spawn from this root will have to pass\n", path)
+		fmt.Printf("--harness. Add one line to it:\n\n    harness = %s\n\n", strings.Join(harness.Names(), " | "))
+	case chosen == "":
+		fmt.Printf("This root spawns on %s, from %s, which was left as it is.\n\n", current, path)
+	case chosen == current:
+		fmt.Printf("%s already says harness = %s. Nothing to change.\n\n", path, current)
+	default:
+		fmt.Printf("%s is yours, not init's, so it was left as it is.\n", path)
+		if current != "" {
+			fmt.Printf("It says harness = %s. To spawn on %s instead, change that one line:\n\n", current, chosen)
+		} else {
+			fmt.Printf("It sets no harness. To spawn on %s, add one line:\n\n", chosen)
+		}
+		fmt.Printf("    harness = %s\n\n", chosen)
+	}
+	return current, nil
 }
 
 func newWhereCmd() *cobra.Command {

@@ -81,8 +81,9 @@ func optionIndex(t *testing.T, names []string, want string) int {
 	return 0
 }
 
-// runInit runs `director init` against a scratch root, as the binary would.
-func runInit(t *testing.T, root string, args ...string) error {
+// runDirector runs one command exactly as the binary would, with no arguments
+// added on its behalf.
+func runDirector(t *testing.T, args ...string) error {
 	t.Helper()
 	saved := opts
 	t.Cleanup(func() { opts = saved })
@@ -90,8 +91,73 @@ func runInit(t *testing.T, root string, args ...string) error {
 	cmd := newRootCmd()
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs(append([]string{"init", "--config", root}, args...))
+	cmd.SetArgs(args)
 	return cmd.Execute()
+}
+
+// runInit runs `director init` against a scratch root named outright.
+func runInit(t *testing.T, root string, args ...string) error {
+	t.Helper()
+	return runDirector(t, append([]string{"init", "--config", root}, args...)...)
+}
+
+// captureStdout collects what init prints. Returns a function that stops the
+// capture and hands back everything written.
+func captureStdout(t *testing.T) func() string {
+	t.Helper()
+	read, write, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe() = %v", err)
+	}
+	saved := os.Stdout
+	os.Stdout = write
+
+	done := make(chan string, 1)
+	go func() {
+		var buffer strings.Builder
+		_, _ = io.Copy(&buffer, read)
+		done <- buffer.String()
+	}()
+
+	var once bool
+	stop := func() string {
+		if once {
+			return ""
+		}
+		once = true
+		os.Stdout = saved
+		_ = write.Close()
+		out := <-done
+		_ = read.Close()
+		return out
+	}
+	t.Cleanup(func() { stop() })
+	return stop
+}
+
+// establishRoot builds a root the ordinary way, so a test can start from one
+// somebody already owns.
+func establishRoot(t *testing.T, root, harnessName string) {
+	t.Helper()
+	registerFakeHarnesses()
+	silenceStdout(t)
+	if err := runInit(t, root, "--harness", harnessName); err != nil {
+		t.Fatalf("establishing %s = %v", root, err)
+	}
+}
+
+// scratchOnly makes sure a test that runs init without --config cannot reach
+// the root this process was itself spawned under.
+func scratchOnly(t *testing.T) {
+	t.Helper()
+	t.Setenv(director.EnvRoot, "")
+}
+
+// directorCount is how many directors a root holds.
+func directorCount(t *testing.T, root string) int {
+	t.Helper()
+	states, _ := director.ListDirectors(root)
+	return len(states)
 }
 
 // configuredHarness is what the written root will actually spawn on, read back
@@ -183,5 +249,110 @@ func TestInitRejectsAnUnknownHarness(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fake-alpha") {
 		t.Errorf("error = %q, want it to list the harnesses that are valid", err)
+	}
+}
+
+func TestInitRefusesARootFoundAboveIt(t *testing.T) {
+	// The reported accident: init run in a worktree under a project that
+	// already had a root registered a director in the project's fleet instead,
+	// silently, and left that fleet with two directors of the same name.
+	scratchOnly(t)
+	project := t.TempDir()
+	parentRoot := filepath.Join(project, director.ProjectDirName)
+	establishRoot(t, parentRoot, "fake-alpha")
+	before := directorCount(t, parentRoot)
+
+	child := filepath.Join(project, "plants", "worktree")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) = %v", child, err)
+	}
+	t.Chdir(child)
+	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true})
+
+	err := runDirector(t, "init")
+	if err == nil {
+		t.Fatal("init = nil, want a refusal rather than adopting the root above")
+	}
+	for _, want := range []string{parentRoot, child, "--config"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+	if got := directorCount(t, parentRoot); got != before {
+		t.Errorf("directors under the root above = %d, want it untouched at %d", got, before)
+	}
+	if _, statErr := os.Stat(filepath.Join(child, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("os.Stat(child .director) = %v, want the refusal to have created nothing", statErr)
+	}
+}
+
+func TestInitRefusesTheRootNamedByDirectorRoot(t *testing.T) {
+	// The same accident by the other door: DIRECTOR_ROOT is exported into every
+	// agent director spawns, so init run in one of those shells used to land in
+	// the fleet that spawned it, wherever the agent was working.
+	project := t.TempDir()
+	parentRoot := filepath.Join(project, director.ProjectDirName)
+	establishRoot(t, parentRoot, "fake-alpha")
+	before := directorCount(t, parentRoot)
+
+	t.Setenv(director.EnvRoot, parentRoot)
+	t.Chdir(t.TempDir())
+	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true})
+
+	err := runDirector(t, "init")
+	if err == nil {
+		t.Fatal("init = nil, want a refusal rather than adopting $DIRECTOR_ROOT")
+	}
+	if !strings.Contains(err.Error(), director.EnvRoot) {
+		t.Errorf("error = %q, want it to say where the root came from", err)
+	}
+	if got := directorCount(t, parentRoot); got != before {
+		t.Errorf("directors under $DIRECTOR_ROOT = %d, want it untouched at %d", got, before)
+	}
+}
+
+func TestInitUsesTheRootInTheWorkingDirectory(t *testing.T) {
+	// Standing in the project and adding another director to it is what init is
+	// for, and the refusal above must not have cost it.
+	scratchOnly(t)
+	silenceStdout(t)
+	project := t.TempDir()
+	root := filepath.Join(project, director.ProjectDirName)
+	establishRoot(t, root, "fake-alpha")
+	before := directorCount(t, root)
+
+	t.Chdir(project)
+	setInitPrompter(t, answering("1\n"))
+
+	if err := runDirector(t, "init"); err != nil {
+		t.Fatalf("init in the project = %v, want no error", err)
+	}
+	if got := directorCount(t, root); got != before+1 {
+		t.Errorf("directors = %d, want %d", got, before+1)
+	}
+}
+
+func TestInitAsksOnAnEstablishedRootAndLeavesItAlone(t *testing.T) {
+	// Silence was the complaint. On a root whose director.conf somebody wrote by
+	// hand, init asks and then says what it did not do — rather than skipping
+	// the question because there was nowhere convenient to put the answer.
+	root := t.TempDir()
+	establishRoot(t, root, "fake-alpha")
+
+	stop := captureStdout(t)
+	setInitPrompter(t, answering(fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-omega"))))
+	err := runInit(t, root)
+	out := stop()
+	if err != nil {
+		t.Fatalf("init on an established root = %v, want no error", err)
+	}
+
+	if got := configuredHarness(t, root); got != "fake-alpha" {
+		t.Errorf("configured harness = %q, want the owner's file left as it was", got)
+	}
+	for _, want := range []string{"fake-omega", "harness = fake-omega", filepath.Join(root, "director.conf")} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init said %q, want it to mention %q", out, want)
+		}
 	}
 }
