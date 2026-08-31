@@ -46,13 +46,34 @@ it genuinely answered:
 - **Acceptance** — rarely present. Which command passes, which behaviour
   changes, what the final report has to contain.
 - **Boundary** — almost never present, and the expensive one. Which paths,
-  which branch, whether it may commit, whether it may push.
+  which branch it makes or stays on, whether it may commit, whether it may
+  push.
 - **Report-back** — if you cannot say what you will do with the result, you
   do not have this yet.
 
 Everything you know that the agent does not is also part of the brief: what
 another engagement has already found, what has been ruled out, which file
 the person pointed at. It shares none of your context and none of theirs.
+
+## The workspace is the brief's first step, not something you do first
+
+If the work needs a worktree, a branch, a clone or a checkout of its own, the
+brief says how to make one and the agent makes it. Do not prepare it yourself
+and spawn into the result, however few commands that would take.
+
+Mostly you would be locking the agent out rather than helping it. The harness
+sandboxes an agent to the directory it starts in, so a workspace you created
+can sit outside that sandbox, and the agent is then refused every attempt to
+enter the one directory you meant it to work in — a failure that reads as
+missing files rather than as something you did. Point `--dir` at a directory
+that contains where the work will land and let the agent make the rest. The
+setup then survives in the brief after your own context is compacted, and the
+agent starts in a state it made and can check rather than one it was handed.
+
+So write it as the first instruction, in the imperative, naming the directory
+to run it from: *"run `<setup command>` from `<path>`, then do your work in
+`<path>/<slug>`."* The `director` skill's *Do not build the workspace
+yourself* has the rest of the argument.
 
 ## Ask about the gaps that change the work; default the rest
 
@@ -76,7 +97,8 @@ Not worth asking — decide, and say what you decided:
   one exception: it is decided once and cannot be changed afterwards, so ask
   if the person will want to watch or take over.
 - Scope details the agent can settle for itself by looking.
-- Anything one command would answer. Run the command.
+- Anything one command would answer. Run the command — a question you could
+  answer, that is, not a change you could make.
 
 If nobody is there to answer, do not stall. Spawn with the narrowest
 boundary the request supports — no commit, no push, one directory — say in
