@@ -19,6 +19,7 @@ import (
 type fakeAdapter struct {
 	name        string
 	permitErr   error
+	spawnErr    error
 	spawns      []harness.SpawnRequest
 	sends       []harness.SendRequest
 	observation harness.Observation
@@ -31,6 +32,9 @@ func (f *fakeAdapter) Stop(context.Context, harness.StopRequest) error { return 
 
 func (f *fakeAdapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.SpawnResult, error) {
 	f.spawns = append(f.spawns, req)
+	if f.spawnErr != nil {
+		return harness.SpawnResult{}, f.spawnErr
+	}
 	return harness.SpawnResult{Ref: "ref-" + req.ID}, nil
 }
 
@@ -101,6 +105,36 @@ func writeFile(t *testing.T, path, body string) {
 	}
 }
 
+func TestAFailedSpawnLeavesNoRecordBehind(t *testing.T) {
+	t.Parallel()
+	// The record is written before the adapter is called so that a crash
+	// between the two is recoverable. A returned error is not that case: the
+	// adapter got far enough to report, and the record it leaves has an empty
+	// Ref, so it names nothing that can be read, stopped or resumed. It shows
+	// up in `status` as stalled with an unknown lifecycle — indistinguishable
+	// from an agent genuinely lost — and can only be cleared by hand.
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	adapter := &fakeAdapter{name: "fake", spawnErr: errors.New("herdr created a tab but reported no pane")}
+	d := newTestDirector(t, adapter, now)
+
+	if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"}); err == nil {
+		t.Fatal("Spawn() = nil error, want the adapter's failure reported")
+	}
+
+	if len(d.State.Engagements) != 0 {
+		t.Errorf("Engagements = %v, want none left behind by a spawn that failed", d.State.Engagements)
+	}
+
+	// And it must be gone from disk too, not just from this process's copy.
+	reopened, err := Open(d.Roots, d.State.DirectorID, func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("Open() = %v, want no error", err)
+	}
+	if len(reopened.State.Engagements) != 0 {
+		t.Errorf("Engagements after reopening = %v, want none", reopened.State.Engagements)
+	}
+}
+
 func TestSpawn(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
@@ -155,26 +189,6 @@ func TestSpawn(t *testing.T) {
 		}
 	})
 
-	t.Run("the binding is recorded even when the adapter fails, so nothing is left untracked", func(t *testing.T) {
-		t.Parallel()
-		adapter := &fakeAdapter{name: "fake"}
-		d := newTestDirector(t, adapter, now)
-		d.Lookup = func(string) (harness.Adapter, error) { return failingAdapter{adapter}, nil }
-
-		if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"}); err == nil {
-			t.Fatal("Spawn() = nil error, want the adapter's failure")
-		}
-		if len(d.State.Engagements) != 1 {
-			t.Fatalf("state holds %d engagements, want 1 — a failed spawn may still have started something", len(d.State.Engagements))
-		}
-	})
-}
-
-// failingAdapter fails only at Spawn, to exercise the crash-safety path.
-type failingAdapter struct{ *fakeAdapter }
-
-func (failingAdapter) Spawn(context.Context, harness.SpawnRequest) (harness.SpawnResult, error) {
-	return harness.SpawnResult{}, errors.New("harness said no")
 }
 
 func TestReport(t *testing.T) {

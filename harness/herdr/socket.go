@@ -214,6 +214,17 @@ func notFound(err error) bool {
 	return false
 }
 
+// paneBusy reports whether herdr refused to start an agent because the pane is
+// not an available shell. On a pane the adapter has just created that means the
+// shell has not reached its prompt yet, which is a wait rather than a failure.
+func paneBusy(err error) bool {
+	var replyErr *responseError
+	if errors.As(err, &replyErr) {
+		return replyErr.Code == "agent_pane_busy"
+	}
+	return false
+}
+
 // stalled reports whether a prompt timed out waiting for a status change. That
 // means the agent is still working and we stopped watching, not that anything
 // went wrong.

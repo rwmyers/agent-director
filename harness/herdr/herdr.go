@@ -30,6 +30,34 @@ type Adapter struct {
 	Now func() time.Time
 
 	client *client
+	// sleep is how the shell-readiness wait passes time, for tests.
+	sleep func(time.Duration)
+}
+
+// shellWait bounds how long Spawn will wait for a pane herdr has just created
+// to become a shell an agent can start in. Generous, because the wait is a
+// login shell's own startup — a profile that sources a version manager can take
+// seconds — and because the alternative to waiting is a failed spawn.
+const shellWait = 15 * time.Second
+
+// shellPoll is how often that wait retries. herdr publishes no readiness field
+// for a pane with no agent in it, so asking again is the only signal there is.
+const shellPoll = 100 * time.Millisecond
+
+// agentWait bounds how long Spawn will wait for a started agent to become one
+// herdr will accept a prompt for. It matches herdr's own documented startup
+// allowance for agent.start, because that is the same event being waited on.
+const agentWait = 30 * time.Second
+
+// agentPoll is how often that wait asks again.
+const agentPoll = 250 * time.Millisecond
+
+func (a *Adapter) pause(d time.Duration) {
+	if a.sleep == nil {
+		time.Sleep(d)
+		return
+	}
+	a.sleep(d)
 }
 
 // New builds an adapter with the defaults.
@@ -171,12 +199,7 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 	// The trailing arguments go to the agent binary itself. This is what lets a
 	// herdr-hosted conversation still be given director's own session id and
 	// its permission restrictions, rather than herdr's defaults.
-	if err := a.rpc().call("agent.start", map[string]any{
-		"name":    label,
-		"kind":    a.kind(),
-		"pane_id": paneID,
-		"args":    a.agentArgs(req),
-	}, nil); err != nil {
+	if err := a.startAgent(agentName(label, req.ID), paneID, a.agentArgs(req)); err != nil {
 		a.discardTab(tabID)
 		return harness.SpawnResult{}, fmt.Errorf("starting a %s agent in pane %s: %w", a.kind(), paneID, err)
 	}
@@ -184,6 +207,10 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 	// The prompt is delivered separately, because agent.start only gets the
 	// agent to an interactive prompt — it does not carry input.
 	if strings.TrimSpace(req.Prompt) != "" {
+		if err := a.awaitAgent(paneID); err != nil {
+			a.discardTab(tabID)
+			return harness.SpawnResult{}, err
+		}
 		if err := a.rpc().call("agent.prompt", map[string]any{
 			"target": paneID,
 			"text":   req.Prompt,
@@ -219,6 +246,129 @@ func (a *Adapter) discardTab(tabID string) {
 		return
 	}
 	_ = a.rpc().call("tab.close", map[string]any{"tab_id": tabID}, nil)
+}
+
+// startAgent starts an agent in a pane this adapter has just created, waiting
+// out the window in which the pane exists but is not yet a shell.
+//
+// tab.create returns when the pane is allocated, not when the shell inside it
+// has reached its prompt, and agent.start refuses a pane that is not "an
+// available shell". The gap is small — a fifth of a second on an unloaded
+// machine — which is exactly what makes it dangerous: it passes by hand and
+// against every fake server, and fails when a director spawns two engagements
+// at once or the machine is busy.
+//
+// Retrying is the whole mechanism because herdr publishes no readiness for a
+// pane with no agent: PaneInfo has no interactive_ready, and agent.list cannot
+// report a pane that has no agent in it yet. Asking again is the only question
+// available. The retry is confined to a pane the adapter created moments ago,
+// so "busy" can only mean "not ready yet" here, never "somebody else's agent is
+// in it".
+func (a *Adapter) startAgent(name, paneID string, args []string) error {
+	params := map[string]any{
+		"name":    name,
+		"kind":    a.kind(),
+		"pane_id": paneID,
+		"args":    args,
+	}
+	attempts := int(shellWait / shellPoll)
+	for attempt := 0; ; attempt++ {
+		err := a.rpc().call("agent.start", params, nil)
+		if err == nil || !paneBusy(err) || attempt >= attempts {
+			return err
+		}
+		a.pause(shellPoll)
+	}
+}
+
+// awaitAgent waits until herdr will accept a prompt for a pane's agent.
+//
+// agent.start returns the moment the process is launched, with launch_pending
+// set: herdr has asked for an agent but has not yet been told one is live in
+// that pane. Prompting in that window is refused outright with agent_not_ready,
+// so a spawn that does not wait here delivers the brief nowhere and reports
+// success, or fails with an error that reads like a herdr fault rather than a
+// race.
+//
+// What ends the window is herdr's agent integration reporting in from inside
+// the agent's own process. Screen detection alone does not do it — herdr will
+// happily report the pane as an idle claude while still refusing to prompt it —
+// which is why the timeout message names the integration. Without it installed
+// this wait can only ever run out, and saying so is the difference between a
+// two-minute fix and another investigation.
+func (a *Adapter) awaitAgent(paneID string) error {
+	attempts := int(agentWait / agentPoll)
+	for attempt := 0; ; attempt++ {
+		agents, err := a.list()
+		if err != nil {
+			return err
+		}
+		for _, agent := range agents {
+			if agent.PaneID == paneID && !agent.LaunchPending {
+				return nil
+			}
+		}
+		if attempt >= attempts {
+			return fmt.Errorf(
+				"the %s agent started in pane %s but herdr never reported it ready to be prompted within %s. "+
+					"herdr learns that from its agent integration, which reports from inside the agent's own process: check `herdr integration status` and install the one for %s if it is missing",
+				a.kind(), paneID, agentWait, a.kind())
+		}
+		a.pause(agentPoll)
+	}
+}
+
+// agentName renders a display name as a herdr agent name.
+//
+// These are two different things wearing one word. A tab's label is prose for a
+// person to read and herdr takes it as given; an agent's name is an identifier
+// herdr validates against `^[a-z][a-z0-9_-]{0,31}$` and rejects outright,
+// before it even looks at the pane. Passing the label straight through means
+// every engagement whose title carries a capital letter or a space — which is
+// very nearly all of them — fails at agent.start with the tab already made.
+//
+// The fallback is the engagement id rather than a constant, because two agents
+// sharing a name are indistinguishable in herdr's own interface. An id already
+// satisfies the rule: prefixed, lowercase, hex.
+func agentName(label, id string) string {
+	if slug := slugify(label); slug != "" {
+		return slug
+	}
+	if slug := slugify(id); slug != "" {
+		return slug
+	}
+	return defaultKind
+}
+
+// slugify reduces a string to what herdr will accept as an agent name, or to
+// empty when nothing usable survives.
+func slugify(value string) string {
+	const limit = 32
+	var out []rune
+	for _, char := range strings.ToLower(value) {
+		switch {
+		case char >= 'a' && char <= 'z':
+			out = append(out, char)
+		case char >= '0' && char <= '9', char == '-', char == '_':
+			// Leading characters that are not letters are dropped rather than
+			// replaced: herdr requires the first one to be a letter, and a
+			// prefix invented here would appear in the pane header as if the
+			// director had chosen it.
+			if len(out) > 0 {
+				out = append(out, char)
+			}
+		default:
+			if len(out) > 0 && out[len(out)-1] != '-' {
+				out = append(out, '-')
+			}
+		}
+		if len(out) == limit {
+			break
+		}
+	}
+	// Truncation can land on a separator, which is legal but reads as an
+	// unfinished word.
+	return strings.TrimRight(string(out), "-_")
 }
 
 // agentArgs builds the command line for the agent herdr launches.
@@ -351,8 +501,14 @@ func (a *Adapter) observe(agent agentInfo) harness.Observation {
 // been asked for but has not reached its prompt reports a status that would
 // otherwise read as ordinary — and sending a brief into a shell that is not yet
 // an agent loses it silently.
+//
+// launch_pending is the whole test. interactive_ready is not read, even though
+// it names exactly the thing being asked about, because herdr omits it from a
+// live agent: an agent working away in a pane reports neither field, so
+// requiring interactive_ready pins every herdr engagement at "starting" for its
+// entire life and the director never sees any of them begin.
 func lifecycleFor(agent agentInfo) harness.Lifecycle {
-	if agent.LaunchPending || !agent.InteractiveReady {
+	if agent.LaunchPending {
 		return harness.LifecycleStarting
 	}
 	switch agent.AgentStatus {
