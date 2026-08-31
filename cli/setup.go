@@ -37,7 +37,8 @@ starter workflows into it, and registers a director bound to one of them.
 
 Asks which harness this project spawns into and writes it into director.conf.
 Pass --harness to answer up front, which is what a setup script wants; without
-a terminal to ask on, that flag is required rather than guessed at.
+a terminal to ask on, or under --json, that flag is required rather than
+guessed at.
 
 Running it again in the same root is safe: it adopts the director already
 registered there and creates nothing, so a setup script can run unconditionally.
@@ -81,8 +82,13 @@ later would leave a live fleet that nothing could describe.`,
 			if err != nil {
 				return err
 			}
-			for _, path := range starterFiles {
-				fmt.Printf("wrote %s\n", path)
+			// The list of files goes into the JSON object rather than ahead of
+			// it: prose on stdout before the object leaves a machine reading
+			// --json with something it cannot parse.
+			if !opts.asJSON {
+				for _, path := range starterFiles {
+					fmt.Printf("wrote %s\n", path)
+				}
 			}
 
 			// Adopt-or-create is a decision, so it is the core's and not this
@@ -103,6 +109,11 @@ later would leave a live fleet that nothing could describe.`,
 				if created {
 					action = "created"
 				}
+				if starterFiles == nil {
+					// An empty list rather than null: a consumer should be able
+					// to range over it without a nil check.
+					starterFiles = []string{}
+				}
 				if err := emit(map[string]any{
 					"director":  state.DirectorID,
 					"name":      state.Name,
@@ -113,6 +124,7 @@ later would leave a live fleet that nothing could describe.`,
 					"created":   created,
 					"directors": len(registered),
 					"ambiguous": len(registered) > 1,
+					"wrote":     starterFiles,
 				}); err != nil {
 					return err
 				}
@@ -339,6 +351,10 @@ func writeStarters(pending []starterFile, chosenHarness string) ([]string, error
 // fallback: without a terminal to ask on and without the flag, this refuses and
 // names the choices, because writing a harness nobody picked is the defect it
 // exists to prevent.
+//
+// --json is the same situation by a different route. A caller parsing JSON
+// cannot answer a question, and the prompt would render onto the stdout it is
+// reading — so the answer has to arrive as a flag there too.
 func resolveHarness(flag string, ask prompter) (string, error) {
 	names := harness.Names()
 
@@ -347,6 +363,10 @@ func resolveHarness(flag string, ask prompter) (string, error) {
 	}
 	if len(names) == 0 {
 		return "", fmt.Errorf("this build of director has no harness adapters registered, so there is nothing to spawn into")
+	}
+	if opts.asJSON {
+		return "", fmt.Errorf("no harness chosen, and --json has nobody to ask: pass --harness (valid: %s)",
+			strings.Join(names, ", "))
 	}
 	if !ask.terminal {
 		return "", fmt.Errorf("no harness chosen and no terminal to ask on: pass --harness (valid: %s)",

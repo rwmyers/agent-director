@@ -139,15 +139,66 @@ func TestInitNewReportsAmbiguityInJSON(t *testing.T) {
 	}
 }
 
+func TestInitJSONIsParseableOnAFreshRoot(t *testing.T) {
+	// Everything init writes has to be inside the object. Prose ahead of it —
+	// the `wrote <path>` lines, or a harness prompt rendering onto the stdout
+	// the caller is parsing — makes --json output that no consumer can read,
+	// which is worse than no --json at all because it looks supported.
+	scratchEnv(t)
+	registerFakeHarnesses()
+	root := t.TempDir()
+
+	report := initJSON(t, root, "--harness", "fake-omega")
+	if report.Action != "created" || report.Directors != 1 {
+		t.Errorf("action = %q, directors = %d; want created/1", report.Action, report.Directors)
+	}
+	if report.Harness != "fake-omega" {
+		t.Errorf("harness = %q, want the one the flag named", report.Harness)
+	}
+	// The starters are still reported, in the object rather than ahead of it.
+	if len(report.Wrote) == 0 {
+		t.Error("wrote = [], want the starter files this init created")
+	}
+	var sawConfig bool
+	for _, path := range report.Wrote {
+		if strings.HasSuffix(path, "director.conf") {
+			sawConfig = true
+		}
+	}
+	if !sawConfig {
+		t.Errorf("wrote = %v, want it to include the director.conf that was written", report.Wrote)
+	}
+}
+
+func TestInitJSONWithoutAHarnessRefusesRatherThanAsking(t *testing.T) {
+	// A caller parsing JSON cannot answer a question, and the prompt would
+	// render onto the stdout it is reading. So --json needs --harness, the same
+	// as a pipe does.
+	scratchEnv(t)
+	registerFakeHarnesses()
+	root := t.TempDir()
+	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: refusingWriter{t: t}, terminal: true, accessible: true})
+
+	err := runInit(t, root, "--json")
+	if err == nil {
+		t.Fatal("init --json with no --harness = nil, want a refusal rather than a prompt")
+	}
+	if !strings.Contains(err.Error(), "--harness") {
+		t.Errorf("error = %q, want it to name the flag that answers the question", err)
+	}
+}
+
 // initReport is what `director init --json` emits.
 type initReport struct {
-	Director  string `json:"director"`
-	Name      string `json:"name"`
-	Workflow  string `json:"workflow"`
-	Action    string `json:"action"`
-	Created   bool   `json:"created"`
-	Directors int    `json:"directors"`
-	Ambiguous bool   `json:"ambiguous"`
+	Director  string   `json:"director"`
+	Name      string   `json:"name"`
+	Workflow  string   `json:"workflow"`
+	Harness   string   `json:"harness"`
+	Action    string   `json:"action"`
+	Created   bool     `json:"created"`
+	Directors int      `json:"directors"`
+	Ambiguous bool     `json:"ambiguous"`
+	Wrote     []string `json:"wrote"`
 }
 
 // initJSON runs `director init --json` and parses what it printed, failing the
@@ -170,4 +221,12 @@ func initJSON(t *testing.T, root string, args ...string) initReport {
 		t.Errorf("init --json printed %q after the object, want nothing", rest)
 	}
 	return report
+}
+
+// refusingWriter fails the test if a prompt ever renders through it.
+type refusingWriter struct{ t *testing.T }
+
+func (w refusingWriter) Write(p []byte) (int, error) {
+	w.t.Errorf("init rendered a prompt under --json: %q", p)
+	return len(p), nil
 }
