@@ -46,6 +46,12 @@ the goal, what "done" looks like, what not to touch, and what to report back.`,
 				return emit(engagement)
 			}
 			fmt.Printf("%s  %s  [%s on %s]\n", engagement.ID, engagement.Title, engagement.Task, engagement.Harness)
+			// Placement decided by where this director is running rather than by
+			// the configuration. Said out loud, because otherwise the only way to
+			// find out why an engagement landed somewhere unexpected is to guess.
+			if note := engagement.Detail["placement"]; note != "" {
+				fmt.Printf("  %s\n", note)
+			}
 			return nil
 		},
 	}

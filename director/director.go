@@ -32,6 +32,7 @@ import (
 	"time"
 
 	"github.com/rwmyers/agent-director/harness"
+	"github.com/rwmyers/agent-director/harness/herdr"
 )
 
 // Director is one registered chief of staff and the fleet it owns.
@@ -48,6 +49,13 @@ type Director struct {
 	// Lookup resolves a harness name to an adapter. Injectable so the core can
 	// be tested against fakes without touching the global registry.
 	Lookup func(name string) (harness.Adapter, error)
+
+	// InPane reports the herdr pane this director process is itself running in,
+	// when it is running in one. It is the one placement input that comes from
+	// the environment, and is injectable for the same reason Lookup is: a test
+	// must be able to state where the director is sitting without a herdr
+	// installed and without editing the environment the test itself runs in.
+	InPane func() (paneID string, ok bool)
 }
 
 // ErrNotFound is returned when an identifier names nothing. Callers map it to
@@ -169,27 +177,108 @@ func Open(roots Roots, id string, clock Clock) (*Director, error) {
 		State:    state,
 		Clock:    clock,
 		Lookup:   harness.Lookup,
+		InPane:   herdr.InPane,
 	}, nil
 }
 
-// adapterFor resolves which harness an engagement runs on: the task's pin, then
-// the workflow default, then the root's configured default.
-func (d *Director) adapterFor(task Task, override string) (harness.Adapter, error) {
+// placement is a resolved harness and, when the environment rather than the
+// configuration chose it, what to say about that.
+type placement struct {
+	adapter harness.Adapter
+	// note explains a placement nothing written down accounts for. Empty unless
+	// detection moved the engagement off what the configuration would have used.
+	note string
+}
+
+// adapterFor resolves which harness an engagement runs on: the caller's
+// override, then the task's or workflow's pin, then the herdr pane this
+// director is itself running in, then the root's configured default.
+//
+// Detection sits above the configured default and below everything else, and
+// the two halves of that are separate decisions. It beats `harness` in
+// director.conf because that key is a standing preference for a project rather
+// than a judgement about this spawn, and a director working inside a pane
+// nearly always wants its fleet in panes beside it — placed below the config
+// key, on any root that sets one, the whole thing would never fire. It loses to
+// a --harness flag and to a workflow pin because those are somebody choosing,
+// for this piece of work, and an ambient signal must never overrule a choice.
+func (d *Director) adapterFor(task Task, override string) (placement, error) {
 	name := override
 	if name == "" {
 		name = d.Workflow.HarnessFor(task)
 	}
 	if name == "" {
+		if detected, ok := d.detectPlacement(); ok {
+			return detected, nil
+		}
 		name = d.Config.Harness
 	}
 	if name == "" {
-		return nil, fmt.Errorf("no harness chosen for task %q: pin one in the task or workflow, set `harness` in director.conf, or pass --harness", task.Name)
+		return placement{}, fmt.Errorf("no harness chosen for task %q: pin one in the task or workflow, set `harness` in director.conf, or pass --harness", task.Name)
 	}
 	lookup := d.Lookup
 	if lookup == nil {
 		lookup = harness.Lookup
 	}
-	return lookup(name)
+	adapter, err := lookup(name)
+	if err != nil {
+		return placement{}, err
+	}
+	return placement{adapter: adapter}, nil
+}
+
+// detectPlacement resolves the harness this director's own surroundings imply:
+// a director running in a herdr pane spawns into herdr panes.
+//
+// It declines rather than failing when the herdr adapter is not in this binary,
+// because detection is ambient. Something nobody asked for must not be able to
+// break a spawn that the configuration alone would have completed — the cost of
+// declining is an engagement in the configured harness, which is exactly what
+// would have happened anyway.
+func (d *Director) detectPlacement() (placement, bool) {
+	if !d.Config.HerdrAutodetect {
+		return placement{}, false
+	}
+	inPane := d.InPane
+	if inPane == nil {
+		inPane = herdr.InPane
+	}
+	paneID, ok := inPane()
+	if !ok {
+		return placement{}, false
+	}
+	lookup := d.Lookup
+	if lookup == nil {
+		lookup = harness.Lookup
+	}
+	adapter, err := lookup(herdr.Name)
+	if err != nil {
+		return placement{}, false
+	}
+	return placement{adapter: adapter, note: paneNote(paneID, d.Config.Harness)}, true
+}
+
+// paneNote is what the person is told when the pane, not the configuration,
+// decided where an engagement went.
+//
+// Silent when the configuration would have chosen herdr anyway: nothing was
+// changed, and reporting a difference that does not exist trains people to stop
+// reading the line that matters. It names the switch, because somebody reading
+// this is being told their configuration was overridden and the next thing they
+// will want is the way to stop it.
+func paneNote(paneID, configured string) string {
+	if configured == herdr.Name {
+		return ""
+	}
+	where := "a herdr pane"
+	if paneID != "" {
+		where = "herdr pane " + paneID
+	}
+	if configured == "" {
+		return fmt.Sprintf("placed on %s: this director is running in %s", herdr.Name, where)
+	}
+	return fmt.Sprintf("placed on %s rather than the configured %s: this director is running in %s (set `herdr_autodetect = false` in director.conf to stop)",
+		herdr.Name, configured, where)
 }
 
 // SpawnOptions is a request to delegate work.
@@ -219,10 +308,11 @@ func (d *Director) Spawn(ctx context.Context, opts SpawnOptions) (*Engagement, e
 	if err != nil {
 		return nil, err
 	}
-	adapter, err := d.adapterFor(task, opts.Harness)
+	place, err := d.adapterFor(task, opts.Harness)
 	if err != nil {
 		return nil, err
 	}
+	adapter := place.adapter
 
 	// Refuse before doing anything if the harness cannot hold the line the
 	// workflow asked for. Running with more access than requested and warning
@@ -269,6 +359,12 @@ func (d *Director) Spawn(ctx context.Context, opts SpawnOptions) (*Engagement, e
 		StartedAt: d.now(),
 		Token:     token,
 		Detail:    map[string]string{},
+	}
+	// Recorded rather than printed, because the core has no stdout. It is stored
+	// with the engagement so the reason survives the command that caused it: an
+	// engagement found in a pane a week later can still say why it is there.
+	if place.note != "" {
+		engagement.Detail["placement"] = place.note
 	}
 
 	if err := d.mutate(func(state *State) error {
@@ -325,14 +421,26 @@ func (d *Director) Spawn(ctx context.Context, opts SpawnOptions) (*Engagement, e
 // run `director`, and requiring that it already be installed somewhere on the
 // user's PATH would make the callback channel depend on how the binary happened
 // to be deployed — a distinction the agent cannot see and could not fix.
+//
+// It also takes one thing away. An adapter that starts a process hands it this
+// director's environment, so a director sitting in a herdr pane would otherwise
+// give every agent it spawns its own pane identity. The agent would then run
+// `director` and conclude it was the process occupying that pane — reporting
+// somebody else's pane as its own, and placing anything it spawned into a pane
+// already busy with the director that spawned it. Emptied rather than omitted,
+// because an inherited variable can only be overridden. The herdr adapter drops
+// these entirely on the way past, so an agent that really is given its own pane
+// gets its identity from herdr and detection stays correct for it.
 func (d *Director) agentEnv(engagement *Engagement, task Task) map[string]string {
 	env := map[string]string{
-		EnvRoot:       d.Roots.Primary,
-		EnvID:         d.State.DirectorID,
-		EnvEngagement: engagement.ID,
-		EnvToken:      engagement.Token,
-		EnvTask:       task.Name,
-		EnvProgress:   strings.Join(task.Progress, ","),
+		EnvRoot:         d.Roots.Primary,
+		EnvID:           d.State.DirectorID,
+		EnvEngagement:   engagement.ID,
+		EnvToken:        engagement.Token,
+		EnvTask:         task.Name,
+		EnvProgress:     strings.Join(task.Progress, ","),
+		herdr.EnvInPane: "",
+		herdr.EnvPane:   "",
 	}
 	if self, err := os.Executable(); err == nil {
 		env[EnvBin] = self

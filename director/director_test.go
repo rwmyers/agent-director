@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/rwmyers/agent-director/harness"
+	"github.com/rwmyers/agent-director/harness/herdr"
 )
 
 // fakeAdapter records what the core asked it to do, so a test can assert that
@@ -83,6 +84,10 @@ report_on   = progress-change, 5m
 		}
 		return adapter, nil
 	}
+	// Placement must not depend on where the suite happens to be running. A
+	// director inside a herdr pane spawns into panes, and a test that inherited
+	// that would pass or fail according to whose terminal ran it.
+	d.InPane = func() (string, bool) { return "", false }
 	return d
 }
 
@@ -476,5 +481,202 @@ func TestDisplayNameSurvivesReload(t *testing.T) {
 	}
 	if got := reloaded.Engagements[engagement.ID].Name; got != "auth-review" {
 		t.Errorf("Name after reload = %q, want %q — it records what a person sees in the harness", got, "auth-review")
+	}
+}
+
+// The placement order is the crux of running a director inside a pane, and
+// every row here is a way of getting it wrong. Detection has to outrank the
+// configured default — under a root that names a harness, which is every root
+// `director init` writes, a detection placed below it would never fire at all.
+// It has to lose to a flag and to a pin, because those are somebody deciding
+// about this piece of work and an ambient signal must not overrule a decision.
+func TestAdapterForPrecedence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+	const pane = "w6:p1"
+
+	cases := []struct {
+		name         string
+		override     string
+		pin          string
+		configured   string
+		autodetect   bool
+		inPane       bool
+		withoutHerdr bool
+		want         string
+		wantNote     bool
+		wantErr      bool
+	}{
+		{
+			name:       "the configured default when nothing else applies",
+			configured: "claude-code",
+			autodetect: true,
+			want:       "claude-code",
+		},
+		{
+			name:       "the pane this director is running in beats the configured default",
+			configured: "claude-code",
+			autodetect: true,
+			inPane:     true,
+			want:       herdr.Name,
+			wantNote:   true,
+		},
+		{
+			name:       "a workflow or task pin beats the pane",
+			pin:        "claude-code",
+			configured: "claude-code",
+			autodetect: true,
+			inPane:     true,
+			want:       "claude-code",
+		},
+		{
+			name:       "an explicit --harness beats the pane",
+			override:   "claude-code",
+			configured: "claude-code",
+			autodetect: true,
+			inPane:     true,
+			want:       "claude-code",
+		},
+		{
+			name:       "an explicit --harness still beats a pin",
+			override:   "claude-code",
+			pin:        herdr.Name,
+			configured: "claude-code",
+			autodetect: true,
+			want:       "claude-code",
+		},
+		{
+			name:       "the escape hatch turns detection off entirely",
+			configured: "claude-code",
+			autodetect: false,
+			inPane:     true,
+			want:       "claude-code",
+		},
+		{
+			name:       "a detected placement the configuration already agreed with says nothing",
+			configured: herdr.Name,
+			autodetect: true,
+			inPane:     true,
+			want:       herdr.Name,
+		},
+		{
+			// Detection is ambient. Something nobody asked for must not be able
+			// to break a spawn that the configuration alone would have made.
+			name:         "a binary built without the herdr adapter falls through to the configuration",
+			configured:   "claude-code",
+			autodetect:   true,
+			inPane:       true,
+			withoutHerdr: true,
+			want:         "claude-code",
+		},
+		{
+			name:       "no pane and nothing configured is still an error",
+			autodetect: true,
+			wantErr:    true,
+		},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			d := newTestDirector(t, &fakeAdapter{name: "claude-code"}, now)
+			d.Config.Harness = testCase.configured
+			d.Config.HerdrAutodetect = testCase.autodetect
+			d.InPane = func() (string, bool) { return pane, testCase.inPane }
+			d.Lookup = func(name string) (harness.Adapter, error) {
+				if name == herdr.Name && testCase.withoutHerdr {
+					return nil, errors.New("no harness named " + name)
+				}
+				return &fakeAdapter{name: name}, nil
+			}
+
+			place, err := d.adapterFor(Task{Name: "investigate", Harness: testCase.pin}, testCase.override)
+			if testCase.wantErr {
+				if err == nil {
+					t.Fatalf("adapterFor() = %v, want an error naming how to choose a harness", place.adapter)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("adapterFor() = %v, want no error", err)
+			}
+			if got := place.adapter.Name(); got != testCase.want {
+				t.Errorf("adapterFor() placed on %q, want %q", got, testCase.want)
+			}
+
+			switch {
+			case testCase.wantNote && place.note == "":
+				t.Error("placement note is empty; nobody can see why the engagement left the configured harness")
+			case testCase.wantNote:
+				for _, want := range []string{pane, testCase.configured, "herdr_autodetect"} {
+					if !strings.Contains(place.note, want) {
+						t.Errorf("placement note = %q, want it to mention %q", place.note, want)
+					}
+				}
+			case place.note != "":
+				t.Errorf("placement note = %q, want none — the configuration was not overridden", place.note)
+			}
+		})
+	}
+}
+
+func TestSpawnRecordsWhyItLeftTheConfiguredHarness(t *testing.T) {
+	t.Parallel()
+	// The note is stored with the engagement rather than printed and forgotten:
+	// the question "why is this thing in a pane" is asked long after the spawn
+	// that answered it has scrolled away.
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	d := newTestDirector(t, &fakeAdapter{name: "claude-code"}, now)
+	d.Config.Harness = "claude-code"
+	d.Lookup = func(name string) (harness.Adapter, error) { return &fakeAdapter{name: name}, nil }
+	d.InPane = func() (string, bool) { return "w6:p1", true }
+
+	engagement, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"})
+	if err != nil {
+		t.Fatalf("Spawn() = %v, want no error", err)
+	}
+	if engagement.Harness != herdr.Name {
+		t.Errorf("Harness = %q, want %q", engagement.Harness, herdr.Name)
+	}
+	if !strings.Contains(engagement.Detail["placement"], "w6:p1") {
+		t.Errorf("detail[placement] = %q, want it to name the pane that decided this", engagement.Detail["placement"])
+	}
+
+	reloaded, err := LoadState(d.State.Path)
+	if err != nil {
+		t.Fatalf("LoadState() = %v, want no error", err)
+	}
+	if got := reloaded.Engagements[engagement.ID].Detail["placement"]; got == "" {
+		t.Error("the placement reason did not survive a reload; it is only useful later")
+	}
+}
+
+func TestSpawnDoesNotHandAnAgentThisDirectorsPane(t *testing.T) {
+	t.Parallel()
+	// The inheritance trap. An adapter that starts a process hands it this
+	// director's environment, so without this an agent would read herdr's
+	// variables, conclude it was the process occupying its parent's pane, and
+	// report somebody else's pane as its own.
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	adapter := &fakeAdapter{name: "fake"}
+	d := newTestDirector(t, adapter, now)
+
+	if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"}); err != nil {
+		t.Fatalf("Spawn() = %v, want no error", err)
+	}
+
+	env := adapter.spawns[0].Env
+	for _, key := range []string{herdr.EnvInPane, herdr.EnvPane} {
+		value, present := env[key]
+		if !present {
+			t.Errorf("Env has no %s; an inherited variable can only be overridden, not omitted", key)
+		}
+		if value != "" {
+			t.Errorf("Env[%s] = %q, want it emptied", key, value)
+		}
+	}
+	if _, present := env[herdr.EnvSocket]; present {
+		t.Errorf("Env carries %s; the socket is not a pane identity and is not director's to set", herdr.EnvSocket)
 	}
 }
