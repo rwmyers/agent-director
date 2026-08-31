@@ -160,6 +160,17 @@ func directorCount(t *testing.T, root string) int {
 	return len(states)
 }
 
+// onlyDirector is the id of the single director a root holds, for tests that
+// assert which root a command reached by the director it named.
+func onlyDirector(t *testing.T, root string) string {
+	t.Helper()
+	states, _ := director.ListDirectors(root)
+	if len(states) != 1 {
+		t.Fatalf("directors under %s = %d, want exactly 1", root, len(states))
+	}
+	return states[0].DirectorID
+}
+
 // configuredHarness is what the written root will actually spawn on, read back
 // through the same loader director uses rather than matched as text.
 func configuredHarness(t *testing.T, root string) string {
@@ -292,22 +303,34 @@ func TestInitHonoursDirectorRoot(t *testing.T) {
 	// the agents it spawns — so init uses it, the same as every other command.
 	// Only the silent walk up out of the working directory is refused; see
 	// TestInitRefusesARootFoundAboveIt for the accident that is about.
-	silenceStdout(t)
+	//
+	// The observable is which root init resolved to, asserted from what it
+	// reports. It used to be the director count, back when a second init in a
+	// root always added one; init now adopts the director already there, so the
+	// count no longer moves and would say nothing either way. Naming the root
+	// and the director it used is the thing this test was always about, and is
+	// a narrower claim than a count that any third root could also satisfy.
 	project := t.TempDir()
 	root := filepath.Join(project, director.ProjectDirName)
 	establishRoot(t, root, "fake-alpha")
-	before := directorCount(t, root)
+	resident := onlyDirector(t, root)
 
 	elsewhere := t.TempDir()
 	t.Setenv(director.EnvRoot, root)
 	t.Chdir(elsewhere)
 	setInitPrompter(t, answering("1\n"))
 
-	if err := runDirector(t, "init"); err != nil {
+	stop := captureStdout(t)
+	err := runDirector(t, "init")
+	out := stop()
+	if err != nil {
 		t.Fatalf("init with $DIRECTOR_ROOT set = %v, want it honoured", err)
 	}
-	if got := directorCount(t, root); got != before+1 {
-		t.Errorf("directors under $DIRECTOR_ROOT = %d, want %d", got, before+1)
+	for _, want := range []string{root, resident} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init said %q, want it to name %q — the root $%s points at",
+				out, want, director.EnvRoot)
+		}
 	}
 	if _, statErr := os.Stat(filepath.Join(elsewhere, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("os.Stat(cwd .director) = %v, want init to have used the named root instead", statErr)
@@ -315,23 +338,35 @@ func TestInitHonoursDirectorRoot(t *testing.T) {
 }
 
 func TestInitUsesTheRootInTheWorkingDirectory(t *testing.T) {
-	// Standing in the project and adding another director to it is what init is
-	// for, and the refusal above must not have cost it.
+	// Standing in the project and running init against it is what init is for,
+	// and the refusal above must not have cost it.
+	//
+	// As above, the observable is which root was used rather than how many
+	// directors are in it: init adopts the one already registered, so the count
+	// stays where it was. What must not happen is init landing somewhere else,
+	// or nesting a second root inside the project.
 	scratchOnly(t)
-	silenceStdout(t)
 	project := t.TempDir()
 	root := filepath.Join(project, director.ProjectDirName)
 	establishRoot(t, root, "fake-alpha")
-	before := directorCount(t, root)
+	resident := onlyDirector(t, root)
 
 	t.Chdir(project)
 	setInitPrompter(t, answering("1\n"))
 
-	if err := runDirector(t, "init"); err != nil {
+	stop := captureStdout(t)
+	err := runDirector(t, "init")
+	out := stop()
+	if err != nil {
 		t.Fatalf("init in the project = %v, want no error", err)
 	}
-	if got := directorCount(t, root); got != before+1 {
-		t.Errorf("directors = %d, want %d", got, before+1)
+	for _, want := range []string{root, resident} {
+		if !strings.Contains(out, want) {
+			t.Errorf("init said %q, want it to name %q — the root in the working directory", out, want)
+		}
+	}
+	if _, statErr := os.Stat(filepath.Join(root, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("os.Stat(nested .director) = %v, want no root nested inside the one that was used", statErr)
 	}
 }
 

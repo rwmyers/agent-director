@@ -101,6 +101,8 @@ func Init(roots Roots, workflowName, name string, clock Clock) (*State, error) {
 	if name == "" {
 		name = workflow.Name
 	}
+	existing, _ := ListDirectors(roots.Primary)
+	name = uniqueName(existing, name)
 
 	state := &State{
 		Path:        statePath(roots.Primary, id),
@@ -115,6 +117,118 @@ func Init(roots Roots, workflowName, name string, clock Clock) (*State, error) {
 		return nil, err
 	}
 	return state, nil
+}
+
+// DefaultWorkflow is the workflow a director binds to when nobody says which.
+// It is the name of the starter `director init` writes.
+const DefaultWorkflow = "default"
+
+// Register is what setting up a root does about directors: adopt the one
+// already registered there, or create one.
+//
+// Repeating init has to be safe. It is the first command anybody runs, the one
+// a setup script runs unconditionally, and the one an agent reaches for when
+// something else complained there was no director — so it gets run twice far
+// more often than it gets run once. Creating another director every time is
+// what turned that into an outage: a root ends up holding two directors with
+// the same auto-generated name, nothing distinguishes them, and every later
+// command refuses to guess between them. Running the same setup command a
+// second time should not be able to break the first.
+//
+// So the default is idempotent, and a second director is asked for rather than
+// arrived at. Wanting two is legitimate — two fleets, or two conversations that
+// must not share a read cursor — but it is a decision, and createNew is where
+// somebody makes it. That is the same shape `Attach` already has, where --new
+// means start another and the absence of it means use what is here.
+//
+// Adoption is refused rather than guessed when a flag disagrees with the
+// director that is already here, because the alternative is init reporting
+// success while quietly ignoring what it was told.
+func Register(roots Roots, workflowName, name string, createNew bool, clock Clock) (*State, bool, error) {
+	// An unreadable record is somebody else's problem to repair, and it is not
+	// a reason to refuse to set up: it cannot be adopted, so it does not count
+	// as something to adopt.
+	existing, _ := ListDirectors(roots.Primary)
+
+	if createNew || len(existing) == 0 {
+		if workflowName == "" {
+			workflowName = DefaultWorkflow
+		}
+		state, err := Init(roots, workflowName, name, clock)
+		return state, true, err
+	}
+
+	if len(existing) > 1 {
+		var labels []string
+		for _, candidate := range existing {
+			labels = append(labels, fmt.Sprintf("  %s (%s), workflow %q", candidate.DirectorID, candidate.Name, candidate.Workflow))
+		}
+		return nil, false, fmt.Errorf(`%d directors are already registered under %s:
+
+%s
+
+init will not pick between them, and adding a third would not help. Act as one
+of them by exporting its id:
+
+    export %s=%s
+
+or retire the ones you do not want (`+"`director retire <id>`"+`), or say outright
+that you want another:
+
+    director init --new --name <label>`,
+			len(existing), roots.Primary, strings.Join(labels, "\n"), EnvID, existing[0].DirectorID)
+	}
+
+	adopted := existing[0]
+	if name != "" && name != adopted.Name {
+		return nil, false, fmt.Errorf(`director %s (%s) is already registered under %s, and you asked for one named %q.
+
+init adopts the director that is here rather than renaming it. Ask outright for
+a second one if that is what you meant:
+
+    director init --new --name %s`,
+			adopted.DirectorID, adopted.Name, roots.Primary, name, name)
+	}
+	if workflowName != "" && workflowName != adopted.Workflow {
+		return nil, false, fmt.Errorf(`director %s (%s) is already registered under %s and is bound to workflow %q, not %q.
+
+A director's workflow is permanent: its engagements are validated against that
+workflow's task types, so rebinding one would leave a live fleet that nothing
+could describe. A director on %q is a different director:
+
+    director init --new --name <label> --workflow %s`,
+			adopted.DirectorID, adopted.Name, roots.Primary, adopted.Workflow, workflowName, workflowName, workflowName)
+	}
+	return adopted, false, nil
+}
+
+// uniqueName keeps two directors in one root from answering to the same label.
+//
+// The name is the only part of a director anybody reads: ids are random hex,
+// and `director directors` is otherwise a list of them. Two rows both called
+// "default" — which is exactly what a root looked like after init had been run
+// twice — is a list nobody can act on, and the ambiguity error that follows
+// names them both without helping. So a label already in use here is suffixed
+// rather than handed out again.
+//
+// It suffixes rather than refuses because the callers that create are the ones
+// that mean to. `Attach --new` gets a second director because a second
+// conversation asked for its own, and failing that request over a name nobody
+// chose would be worse than answering it with a name they can tell apart.
+func uniqueName(existing []*State, want string) string {
+	taken := make(map[string]bool, len(existing))
+	for _, state := range existing {
+		taken[state.Name] = true
+	}
+	if !taken[want] {
+		return want
+	}
+	for n := 2; ; n++ {
+		candidate := fmt.Sprintf("%s-%d", want, n)
+		if !taken[candidate] {
+			return candidate
+		}
+	}
 }
 
 // Open loads a director by identifier.

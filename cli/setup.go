@@ -27,7 +27,7 @@ var starters embed.FS
 
 func newInitCmd() *cobra.Command {
 	var workflow, name, harnessName string
-	var force, global bool
+	var force, global, createNew bool
 
 	cmd := &cobra.Command{
 		Use:   "init",
@@ -38,6 +38,12 @@ starter workflows into it, and registers a director bound to one of them.
 Asks which harness this project spawns into and writes it into director.conf.
 Pass --harness to answer up front, which is what a setup script wants; without
 a terminal to ask on, that flag is required rather than guessed at.
+
+Running it again in the same root is safe: it adopts the director already
+registered there and creates nothing, so a setup script can run unconditionally.
+Pass --new to add a second director to a root that already has one — that is a
+real thing to want, and it is a decision rather than something you should reach
+by running the same command twice.
 
 The workflow binding is permanent. A director's engagements are validated
 against its workflow's task types and progress vocabularies, so switching it
@@ -71,50 +77,68 @@ later would leave a live fleet that nothing could describe.`,
 				return err
 			}
 
-			created, err := writeStarters(pending, effectiveHarness)
+			starterFiles, err := writeStarters(pending, effectiveHarness)
 			if err != nil {
 				return err
 			}
-			for _, path := range created {
+			for _, path := range starterFiles {
 				fmt.Printf("wrote %s\n", path)
 			}
 
-			// Creating a second director is legitimate, but it must never be
-			// silent: an agent that runs init reflexively would otherwise make
-			// every subsequent command refuse to run, with nothing to explain
-			// why it had started failing.
-			// An unreadable record still counts as a director that exists here,
-			// but it is not a reason to refuse to create one.
-			existing, _ := director.ListDirectors(roots.Primary)
-
-			if workflow == "" {
-				workflow = "default"
-			}
-			state, err := director.Init(roots, workflow, name, director.SystemClock)
+			// Adopt-or-create is a decision, so it is the core's and not this
+			// command's: a TUI setting a project up would have to make exactly
+			// the same one.
+			state, created, err := director.Register(roots, workflow, name, createNew, director.SystemClock)
 			if err != nil {
 				return err
 			}
+			// What the root holds now, not what it held before. A second
+			// director makes every later command refuse to choose, and that has
+			// to be said here — by the command that caused it, while somebody
+			// is still looking at the output.
+			registered, unreadable := director.ListDirectors(roots.Primary)
 
 			if opts.asJSON {
-				return emit(map[string]string{
-					"director": state.DirectorID,
-					"name":     state.Name,
-					"workflow": state.Workflow,
-					"root":     roots.Primary,
-					"harness":  effectiveHarness,
-				})
+				action := "adopted"
+				if created {
+					action = "created"
+				}
+				if err := emit(map[string]any{
+					"director":  state.DirectorID,
+					"name":      state.Name,
+					"workflow":  state.Workflow,
+					"root":      roots.Primary,
+					"harness":   effectiveHarness,
+					"action":    action,
+					"created":   created,
+					"directors": len(registered),
+					"ambiguous": len(registered) > 1,
+				}); err != nil {
+					return err
+				}
+				reportUnreadable(unreadable)
+				return nil
 			}
-			fmt.Printf("\ndirector %s (%s) initialised for workflow %q\n", state.DirectorID, state.Name, state.Workflow)
+			if created {
+				fmt.Printf("\ndirector %s (%s) initialised for workflow %q\n", state.DirectorID, state.Name, state.Workflow)
+			} else {
+				fmt.Printf("\ndirector %s (%s) is already registered here for workflow %q, so init used it\n",
+					state.DirectorID, state.Name, state.Workflow)
+				fmt.Printf("Nothing was created. Pass --new to add a second director to this root.\n")
+			}
 			fmt.Printf("root: %s\n\n", roots.Primary)
 			if !global && opts.config == "" {
 				fmt.Printf("This root is local to this project. Directors and engagements under it\n")
 				fmt.Printf("are invisible to other projects. Use --global for a machine-wide setup.\n\n")
 			}
 
-			if len(existing) > 0 {
-				fmt.Printf("Note: %d director(s) already existed here, so this is an additional one.\n", len(existing))
-				fmt.Printf("If you meant to use an existing one instead, see `director directors`.\n\n")
+			if len(registered) > 1 {
+				fmt.Printf("This root now holds %d directors, so no command here can pick one for you.\n", len(registered))
+				fmt.Printf("Say which one you are, in every shell that acts as it:\n\n")
+				fmt.Printf("    export %s=%s\n\n", director.EnvID, state.DirectorID)
+				fmt.Printf("`director directors` lists them; `director retire <id>` removes one you do not want.\n\n")
 			}
+			reportUnreadable(unreadable)
 
 			// What comes next is a person's work, not an agent's: the task
 			// types are decisions about how this project delegates, and they
@@ -141,6 +165,7 @@ later would leave a live fleet that nothing could describe.`,
 	cmd.Flags().StringVar(&workflow, "workflow", "", "workflow to bind this director to (default: default)")
 	cmd.Flags().StringVar(&harnessName, "harness", "", "harness to spawn on, skipping the question (default: ask)")
 	cmd.Flags().StringVar(&name, "name", "", "human label for this director")
+	cmd.Flags().BoolVar(&createNew, "new", false, "register another director here rather than using the one already registered")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite starter files that already exist")
 	cmd.Flags().BoolVar(&global, "global", false, "set up in the user root rather than this project")
 	return cmd

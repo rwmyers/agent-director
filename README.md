@@ -31,6 +31,8 @@ they belong in version control, and no agent should be making them.
 make install
 cd your-project
 director init                       # asks which harness, writes .director/ with starter workflows
+                                    # safe to repeat: it uses the director already
+                                    # registered here. `--new` adds a second one.
 director install                    # put the director skills where your harness finds them
 $EDITOR .director/workflows/*.conf  # make the task types yours
 ```
