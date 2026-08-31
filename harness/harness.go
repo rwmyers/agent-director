@@ -389,7 +389,7 @@ type SkillInstaller interface {
 //
 // A Go adapter says this by not implementing SkillInstaller at all. The
 // sentinel is for adapters that cannot decide at compile time — a plugin
-// adapter is one Go type standing for every executable on $PATH, so whether it
+// adapter is one Go type standing for every plugin executable, so whether it
 // has an answer is only known once the plugin has been asked.
 var ErrNoSkillLocations = errors.New("harness declares no skills location")
 

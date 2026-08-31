@@ -1,9 +1,10 @@
 // Command director runs and coordinates independent agent conversations.
 //
 // This binary is director with the harness adapters it ships with, plus
-// whatever director-harness-* plugins are on $PATH. An adapter someone else
-// wrote in Go is added by building your own binary from a main exactly like
-// this one, with their package imported alongside:
+// whatever director-harness-* plugins discovery finds — on $PATH, or beside
+// this binary. An adapter someone else wrote in Go is added by building your
+// own binary from a main exactly like this one, with their package imported
+// alongside:
 //
 //	import (
 //		"github.com/rwmyers/agent-director/cli"
@@ -28,7 +29,8 @@ import (
 	_ "github.com/rwmyers/agent-director/harness/claudecode"
 	// Registers the built-in herdr adapter.
 	_ "github.com/rwmyers/agent-director/harness/herdr"
-	// Registers every director-harness-* executable found on $PATH.
+	// Registers every director-harness-* executable discovery finds, on $PATH
+	// or beside this binary.
 	_ "github.com/rwmyers/agent-director/harness/plugin"
 )
 

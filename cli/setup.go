@@ -395,8 +395,8 @@ func checkHarness(name string) error {
 // asks with. One mechanism, so there is nothing to drift.
 //
 // The choices are the adapter registry, so what is offered is exactly what this
-// binary can drive — including plugins found on $PATH — and there is no second
-// list to fall out of step with the first.
+// binary can drive — including the plugin executables discovery found — and
+// there is no second list to fall out of step with the first.
 func askHarness(ask prompter, current string) (string, error) {
 	names := harness.Names()
 	options := make([]huh.Option[string], 0, len(names))

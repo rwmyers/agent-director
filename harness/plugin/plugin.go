@@ -1,5 +1,6 @@
-// Package plugin registers every director-harness-* executable on $PATH as a
-// harness adapter.
+// Package plugin registers every director-harness-* executable director can
+// find — on $PATH, or in the directory holding the running director binary — as
+// a harness adapter.
 //
 // An external plugin and a built-in adapter land at the same registry and
 // nothing downstream can tell them apart. The Go interface is the contract;
@@ -12,7 +13,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sync"
 
 	"github.com/rwmyers/agent-director/harness"
@@ -38,14 +38,15 @@ func init() { RegisterAll() }
 // Discovery reads directory entries and executes nothing, so this costs
 // nothing at startup: a plugin is described lazily, once, the first time it is
 // actually used.
+//
+// Where to look is not this package's business. It used to split $PATH itself,
+// which meant two packages held an opinion about where plugins live and only
+// one of them got fixed when the answer changed. internal/plugin owns that
+// answer now; this calls Discover and registers what comes back.
 func RegisterAll() {
-	for _, found := range plugin.DiscoverIn(pathDirs()) {
+	for _, found := range plugin.Discover() {
 		harness.Register(&Adapter{client: plugin.New(found)})
 	}
-}
-
-func pathDirs() []string {
-	return filepath.SplitList(os.Getenv("PATH"))
 }
 
 // Adapter drives one external plugin.
@@ -65,8 +66,8 @@ func (a *Adapter) Name() string { return a.client.Name }
 // describe runs the mandatory handshake once.
 //
 // A failure here costs the user this plugin and says why; it must never take
-// down the whole command, because one broken executable on $PATH would then
-// stop director working at all.
+// down the whole command, because one broken executable in a directory
+// discovery searches would then stop director working at all.
 func (a *Adapter) describe() (*plugin.Description, error) {
 	a.once.Do(func() {
 		a.client.Stderr = os.Stderr
@@ -199,7 +200,7 @@ func (a *Adapter) Stop(ctx context.Context, req harness.StopRequest) error {
 //
 // Present unconditionally because the optional-interface probe happens before
 // describe has run, and running describe during a capability probe would mean
-// executing every plugin on $PATH just to render a help table. A plugin that
+// executing every plugin discovery found just to render a help table. A plugin that
 // cannot read fails the verb, which the core surfaces as an error rather than
 // as an empty result.
 func (a *Adapter) Read(ctx context.Context, req harness.ReadRequest) (harness.ReadResult, error) {

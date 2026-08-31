@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -65,6 +66,156 @@ func TestDiscoverIn(t *testing.T) {
 		writePlugin(t, dir, "good", "echo '{}'")
 		if found := DiscoverIn([]string{"/nonexistent", dir, ""}); len(found) != 1 {
 			t.Errorf("DiscoverIn() = %+v, want the one real plugin", found)
+		}
+	})
+
+	t.Run("one directory listed twice still yields one plugin", func(t *testing.T) {
+		t.Parallel()
+		// The binary's own directory is usually also a $PATH entry, and a
+		// harness listed twice would be registered twice.
+		dir := t.TempDir()
+		writePlugin(t, dir, "dup", "echo '{}'")
+
+		if found := DiscoverIn([]string{dir, dir}); len(found) != 1 {
+			t.Errorf("DiscoverIn() = %+v, want the plugin once", found)
+		}
+	})
+}
+
+// locating returns a stand-in for os.Executable, so these tests never depend on
+// where the test binary itself was built.
+func locating(path string) func() (string, error) {
+	return func() (string, error) { return path, nil }
+}
+
+func TestSearchDirs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the binary's own directory is searched even when $PATH omits it", func(t *testing.T) {
+		t.Parallel()
+		// The bug this exists to fix: `go install` puts director and its
+		// plugins in ~/go/bin together, and somebody whose $PATH is missing
+		// that directory has the plugins on disk and invisible.
+		dirs := searchDirs([]string{"/usr/bin"}, locating("/home/someone/go/bin/director"))
+
+		if !slices.Contains(dirs, "/home/someone/go/bin") {
+			t.Errorf("searchDirs() = %q, want the binary's own directory included", dirs)
+		}
+	})
+
+	t.Run("$PATH is searched before the binary's own directory", func(t *testing.T) {
+		t.Parallel()
+		// Ordering decides which copy wins, and a deliberately shadowed plugin
+		// earlier on $PATH must keep winning.
+		dirs := searchDirs([]string{"/first", "/second"}, locating("/home/someone/go/bin/director"))
+
+		want := []string{"/first", "/second", "/home/someone/go/bin"}
+		if !slices.Equal(dirs, want) {
+			t.Errorf("searchDirs() = %q, want %q", dirs, want)
+		}
+	})
+
+	t.Run("a directory already on $PATH is not searched twice", func(t *testing.T) {
+		t.Parallel()
+		dirs := searchDirs([]string{"/home/someone/go/bin", "/usr/bin"}, locating("/home/someone/go/bin/director"))
+
+		want := []string{"/home/someone/go/bin", "/usr/bin"}
+		if !slices.Equal(dirs, want) {
+			t.Errorf("searchDirs() = %q, want %q", dirs, want)
+		}
+	})
+
+	t.Run("differently spelled duplicates collapse too", func(t *testing.T) {
+		t.Parallel()
+		dirs := searchDirs([]string{"/usr/local/../bin/"}, locating("/usr/bin/director"))
+
+		if len(dirs) != 1 {
+			t.Errorf("searchDirs() = %q, want the one directory named twice", dirs)
+		}
+	})
+
+	t.Run("a symlinked binary contributes the invoked and the real directory", func(t *testing.T) {
+		t.Parallel()
+		// Two different arrangements, not two degrees of correctness: plugins
+		// may sit beside the name that was invoked, or beside the real binary.
+		root := t.TempDir()
+		real, link := filepath.Join(root, "real"), filepath.Join(root, "link")
+		for _, dir := range []string{real, link} {
+			if err := os.Mkdir(dir, 0o750); err != nil {
+				t.Fatal(err)
+			}
+		}
+		binary := filepath.Join(real, "director")
+		if err := os.WriteFile(binary, []byte("#!/bin/sh\n"), 0o700); err != nil { // #nosec G306 -- a test fixture that must be executable
+			t.Fatal(err)
+		}
+		invoked := filepath.Join(link, "director")
+		if err := os.Symlink(binary, invoked); err != nil {
+			t.Fatal(err)
+		}
+
+		dirs := searchDirs(nil, locating(invoked))
+
+		resolved, err := filepath.EvalSymlinks(real)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, want := range []string{link, resolved} {
+			if !slices.Contains(dirs, want) {
+				t.Errorf("searchDirs() = %q, want it to include %q", dirs, want)
+			}
+		}
+	})
+
+	t.Run("an unlocatable binary leaves $PATH working", func(t *testing.T) {
+		t.Parallel()
+		// Asking what harnesses exist must never fail because os.Executable
+		// could not answer.
+		dirs := searchDirs([]string{"/usr/bin"}, func() (string, error) { return "", errors.New("no") })
+
+		if !slices.Equal(dirs, []string{"/usr/bin"}) {
+			t.Errorf("searchDirs() = %q, want $PATH alone", dirs)
+		}
+	})
+}
+
+func TestDiscoverBesideTheBinary(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a plugin beside the binary is found when that directory is not on $PATH", func(t *testing.T) {
+		t.Parallel()
+		beside, elsewhere := t.TempDir(), t.TempDir()
+		writePlugin(t, beside, "neighbour", "echo '{}'")
+
+		found := DiscoverIn(searchDirs([]string{elsewhere}, locating(filepath.Join(beside, "director"))))
+
+		if len(found) != 1 || found[0].Name != "neighbour" {
+			t.Errorf("DiscoverIn(searchDirs(...)) = %+v, want the plugin beside the binary", found)
+		}
+	})
+
+	t.Run("that plugin is found once when the directory is also on $PATH", func(t *testing.T) {
+		t.Parallel()
+		beside := t.TempDir()
+		writePlugin(t, beside, "neighbour", "echo '{}'")
+
+		found := DiscoverIn(searchDirs([]string{beside}, locating(filepath.Join(beside, "director"))))
+
+		if len(found) != 1 {
+			t.Errorf("DiscoverIn(searchDirs(...)) = %+v, want the plugin once, not once per directory", found)
+		}
+	})
+
+	t.Run("a copy earlier on $PATH still shadows the one beside the binary", func(t *testing.T) {
+		t.Parallel()
+		shadow, beside := t.TempDir(), t.TempDir()
+		wanted := writePlugin(t, shadow, "neighbour", "echo '{}'")
+		writePlugin(t, beside, "neighbour", "echo '{}'")
+
+		found := DiscoverIn(searchDirs([]string{shadow}, locating(filepath.Join(beside, "director"))))
+
+		if len(found) != 1 || found[0].Path != wanted {
+			t.Errorf("DiscoverIn(searchDirs(...)) = %+v, want the copy the user put on $PATH", found)
 		}
 	})
 }

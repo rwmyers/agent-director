@@ -1,11 +1,14 @@
 // Package plugin is the transport for harness adapters that live outside this
 // binary.
 //
-// A plugin is an executable named director-harness-<name> on $PATH — the
-// convention git, kubectl and docker all use. Anything matching is loadable;
-// there is no allowlist. director runs it once per call with the verb as its
-// only argument, writes a JSON request on stdin, and reads a JSON result from
-// stdout:
+// A plugin is an executable named director-harness-<name> — the convention git,
+// kubectl and docker all use — found either on $PATH or in the directory holding
+// the running director binary. The second place matters because `go install`
+// drops director and its plugins into ~/go/bin together, and somebody whose
+// $PATH is missing that directory would otherwise have the plugins on disk and
+// invisible. Anything matching is loadable; there is no allowlist. director runs
+// it once per call with the verb as its only argument, writes a JSON request on
+// stdin, and reads a JSON result from stdout:
 //
 //		{"api_version": 1, "config": {"socket": "/tmp/x"}, "params": {...}}
 //
@@ -78,8 +81,74 @@ type Found struct {
 	Path string
 }
 
-// Discover returns the harness plugins on $PATH.
-func Discover() []Found { return DiscoverIn(filepath.SplitList(os.Getenv("PATH"))) }
+// Discover returns the harness plugins this director can run: everything on
+// $PATH, and everything sitting beside the director binary itself.
+func Discover() []Found { return DiscoverIn(SearchDirs()) }
+
+// SearchDirs is where Discover looks, in the order it looks: every $PATH entry
+// first, then the directory holding the running binary.
+//
+// $PATH comes first because it is the user's own statement about which
+// executables they want. Somebody who deliberately shadows a plugin — an
+// edited copy earlier on $PATH than the one `go install` wrote — means it, and
+// having the binary's neighbour quietly win would defeat exactly the person who
+// was most explicit. Appending is enough for the bug this exists to fix: the
+// missing plugin is missing from $PATH under that name, so the fallback applies
+// per name rather than only when $PATH yields nothing at all. One unrelated
+// plugin on $PATH must not make director's own neighbours invisible again.
+//
+// Both the directory director was invoked from and the one it really lives in
+// are searched, because those are two different arrangements and neither is
+// wrong. ~/bin/director symlinked to ~/go/bin/director with plugins dropped in
+// ~/bin is the first; the `go install` case, reached through a symlink
+// elsewhere, is the second. Which of the two os.Executable already reports is a
+// platform detail — on Linux it reads /proc/self/exe and is resolved already,
+// on macOS it is not — so picking one would mean different behaviour per
+// platform for the same layout. Searching both costs one extra ReadDir, and the
+// deduplication below means a plugin found in both is still one plugin.
+//
+// os.Executable can fail. Discovery then answers for $PATH alone rather than
+// failing: a caller asking what harnesses exist gets a shorter list, never an
+// error.
+func SearchDirs() []string { return searchDirs(filepath.SplitList(os.Getenv("PATH")), os.Executable) }
+
+// searchDirs is SearchDirs with its two sources injected, so tests can drive it
+// without depending on $PATH or on where the test binary happens to live.
+// locate is os.Executable in production.
+func searchDirs(pathDirs []string, locate func() (string, error)) []string {
+	dirs := make([]string, 0, len(pathDirs)+2)
+	dirs = append(dirs, pathDirs...)
+	if exe, err := locate(); err == nil {
+		dirs = append(dirs, filepath.Dir(exe))
+		if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+			dirs = append(dirs, filepath.Dir(resolved))
+		}
+	}
+	return dedupeDirs(dirs)
+}
+
+// dedupeDirs drops empty and repeated directories, keeping the first spelling of
+// each. Without it the common case — a $PATH that already contains the binary's
+// own directory — would read the same directory twice.
+func dedupeDirs(dirs []string) []string {
+	seen := map[string]bool{}
+	kept := make([]string, 0, len(dirs))
+	for _, dir := range dirs {
+		if dir == "" {
+			continue
+		}
+		key := filepath.Clean(dir)
+		if absolute, err := filepath.Abs(key); err == nil {
+			key = absolute
+		}
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		kept = append(kept, dir)
+	}
+	return kept
+}
 
 // DiscoverIn is Discover over an explicit set of directories.
 //
@@ -238,7 +307,12 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, verb string, p
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, c.Path, verb) // #nosec G204 -- path came from $PATH discovery
+	// #nosec G204 -- c.Path is not caller-supplied: it is a director-harness-*
+	// file discovery found in a directory the user already trusts to hold
+	// executables, either a $PATH entry or the directory the running director
+	// binary sits in. The second is no weaker than the first — anyone who can
+	// write next to director can replace director.
+	cmd := exec.CommandContext(ctx, c.Path, verb)
 	cmd.Stdin = bytes.NewReader(body)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
