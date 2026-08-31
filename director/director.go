@@ -401,15 +401,27 @@ func (d *Director) Spawn(ctx context.Context, opts SpawnOptions) (*Engagement, e
 		Env:    d.agentEnv(engagement, task),
 	})
 	if spawnErr != nil {
-		// Leave the orphan record in place rather than deleting it. A failed
-		// spawn may still have started something, and a record the director can
-		// see and stop is safer than a clean state file and a stray process.
-		_ = d.mutate(func(state *State) error {
-			if held, ok := state.Engagements[id]; ok {
-				held.Detail["spawn_error"] = spawnErr.Error()
-			}
+		// Take the record back out. It was written before the call so that a
+		// crash between the two leaves something recoverable, and that is the
+		// only case it is for: a returned error means the adapter got far
+		// enough to report, and an adapter that reports a failed spawn is
+		// responsible for what it created on the way to failing.
+		//
+		// Keeping it costs more than it saves. The record's Ref is empty, so it
+		// names nothing a director can read, stop or resume — it can only be
+		// removed by hand, and until it is, it sits in `status` as a stalled
+		// engagement of unknown lifecycle, which is what a genuinely lost agent
+		// looks like. One failed spawn should not make the fleet unreadable.
+		//
+		// The error is returned rather than recorded because the caller is
+		// standing right there: nobody has to go and look up why.
+		if removeErr := d.mutate(func(state *State) error {
+			delete(state.Engagements, id)
 			return nil
-		})
+		}); removeErr != nil {
+			return nil, fmt.Errorf("spawning on %s: %w (and clearing the record failed: %v)",
+				adapter.Name(), spawnErr, removeErr)
+		}
 		return nil, fmt.Errorf("spawning on %s: %w", adapter.Name(), spawnErr)
 	}
 

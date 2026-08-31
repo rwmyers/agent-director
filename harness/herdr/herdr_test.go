@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
+	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -55,6 +57,25 @@ func newFakeServer(t *testing.T, replies map[string]any) *fakeServer {
 	return server
 }
 
+// sequence answers successive calls of one method differently, which is the
+// only way to express a transient condition — a pane that is not a shell yet
+// but will be. The last reply repeats, so a sequence can describe either
+// something that clears or something that never does.
+type sequence struct {
+	mu      sync.Mutex
+	replies []any
+}
+
+func (s *sequence) next() any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	reply := s.replies[0]
+	if len(s.replies) > 1 {
+		s.replies = s.replies[1:]
+	}
+	return reply
+}
+
 func (s *fakeServer) handle(conn net.Conn) {
 	defer func() { _ = conn.Close() }()
 	line, err := bufio.NewReader(conn).ReadBytes('\n')
@@ -69,6 +90,9 @@ func (s *fakeServer) handle(conn net.Conn) {
 
 	reply := map[string]any{"id": req.ID}
 	if canned, ok := s.replies[req.Method]; ok {
+		if steps, staged := canned.(*sequence); staged {
+			canned = steps.next()
+		}
 		if failure, isErr := canned.(*responseError); isErr {
 			reply["error"] = map[string]string{"code": failure.Code, "message": failure.Message}
 		} else {
@@ -79,6 +103,73 @@ func (s *fakeServer) handle(conn net.Conn) {
 	}
 	body, _ := json.Marshal(reply)
 	_, _ = conn.Write(append(body, '\n'))
+}
+
+// The replies below are herdr's own envelopes, carrying every field its
+// published schema marks required. They are transcribed from
+// `herdr api schema --json` — protocol 19, the schema the installed server
+// prints — and deliberately not from the Go structs that decode them.
+//
+// That direction matters. Fixtures written to match the structs agree with the
+// adapter by construction and can only ever confirm it, which is how a decode
+// aimed at the wrong nesting level passed these tests for its whole life
+// without once working against a real server.
+
+// tabCreatedReply is what tab.create answers with: the tab and its root pane as
+// separate nested objects, neither flattened into the result.
+func tabCreatedReply(tabID, paneID string) map[string]any {
+	return map[string]any{
+		"type": "tab_created",
+		"tab": map[string]any{
+			"tab_id": tabID, "workspace_id": "w1", "number": 1,
+			"label": "auth-review", "focused": false,
+			"pane_count": 1, "agent_status": "unknown",
+		},
+		"root_pane": map[string]any{
+			"pane_id": paneID, "terminal_id": "term1", "workspace_id": "w1",
+			"tab_id": tabID, "focused": false,
+			"agent_status": "unknown", "revision": 0,
+		},
+	}
+}
+
+// agentListReply is what agent.list answers with.
+func agentListReply(agents ...map[string]any) map[string]any {
+	return map[string]any{"type": "agent_list", "agents": agents}
+}
+
+// promptableAgent is an agent herdr will accept a prompt for.
+//
+// It reports neither launch_pending nor interactive_ready, because that is the
+// shape a live agent actually arrives in: herdr omits both once the launch has
+// completed, and never republishes interactive_ready afterwards.
+func promptableAgent(paneID string) map[string]any {
+	return map[string]any{
+		"pane_id": paneID, "terminal_id": "term1", "workspace_id": "w1",
+		"tab_id": "t1", "focused": false, "agent": "claude",
+		"agent_status": "idle", "revision": 1,
+	}
+}
+
+// launchingAgent is the same pane in the window herdr refuses to prompt.
+func launchingAgent(paneID string) map[string]any {
+	agent := promptableAgent(paneID)
+	agent["launch_pending"] = true
+	agent["agent_status"] = "unknown"
+	return agent
+}
+
+// paneReadReply is what pane.read answers with: the snapshot nested under
+// "read", not returned at the top level.
+func paneReadReply(paneID, text string, truncated bool) map[string]any {
+	return map[string]any{
+		"type": "pane_read",
+		"read": map[string]any{
+			"pane_id": paneID, "workspace_id": "w1", "tab_id": "t1",
+			"source": "recent_unwrapped", "format": "text",
+			"text": text, "revision": 0, "truncated": truncated,
+		},
+	}
 }
 
 func (s *fakeServer) adapter() *Adapter {
@@ -187,7 +278,8 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	// start in it, so spawning is structurally two steps. This is the shape
 	// that forced the engagement ID and the harness Ref apart.
 	server := newFakeServer(t, map[string]any{
-		"tab.create": map[string]any{"tab_id": "t1", "pane_id": "p7"},
+		"tab.create": tabCreatedReply("t1", "p7"),
+		"agent.list": agentListReply(promptableAgent("p7")),
 	})
 
 	result, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
@@ -201,14 +293,325 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 	if result.Ref != "p7" {
 		t.Errorf("Ref = %q, want herdr's own pane id %q", result.Ref, "p7")
 	}
+	if result.Detail["tab_id"] != "t1" {
+		t.Errorf("Detail[tab_id] = %q, want %q from the nested tab object", result.Detail["tab_id"], "t1")
+	}
 
 	methods := make([]string, len(server.calls))
 	for i, call := range server.calls {
 		methods[i] = call.Method
 	}
-	want := []string{"tab.create", "agent.start", "agent.prompt"}
+	// agent.list sits between the two because herdr will not accept a prompt for
+	// an agent it has not yet been told is live.
+	want := []string{"tab.create", "agent.start", "agent.list", "agent.prompt"}
 	if strings.Join(methods, ",") != strings.Join(want, ",") {
 		t.Errorf("Spawn() called %v, want %v", methods, want)
+	}
+}
+
+func TestSpawnWaitsForTheNewPaneToBecomeAShell(t *testing.T) {
+	t.Parallel()
+	// tab.create returns when the pane is allocated, not when the shell inside
+	// it has reached a prompt, and agent.start refuses a pane that is not yet
+	// "an available shell". The gap is a fifth of a second on an idle machine,
+	// which is why it survives being tried by hand and only shows up when a
+	// director spawns several engagements at once.
+	paneBusyReply := func() *responseError {
+		return &responseError{Code: "agent_pane_busy", Message: "agent target pane p7 is not an available shell"}
+	}
+
+	t.Run("the shell arrives", func(t *testing.T) {
+		t.Parallel()
+		server := newFakeServer(t, map[string]any{
+			"tab.create": tabCreatedReply("t1", "p7"),
+			"agent.start": &sequence{replies: []any{
+				paneBusyReply(),
+				paneBusyReply(),
+				map[string]any{"type": "agent_started"},
+			}},
+			"agent.list": agentListReply(promptableAgent("p7")),
+		})
+		adapter := server.adapter()
+		waits := 0
+		adapter.sleep = func(time.Duration) { waits++ }
+
+		result, err := adapter.Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		})
+		if err != nil {
+			t.Fatalf("Spawn() = %v, want the busy pane waited out rather than reported", err)
+		}
+		if result.Ref != "p7" {
+			t.Errorf("Ref = %q, want %q", result.Ref, "p7")
+		}
+		if waits != 2 {
+			t.Errorf("waited %d times, want 2 — one per busy reply", waits)
+		}
+		for _, call := range server.calls {
+			if call.Method == "tab.close" {
+				t.Error("Spawn() closed the tab it went on to use")
+			}
+		}
+	})
+
+	t.Run("the shell never arrives", func(t *testing.T) {
+		t.Parallel()
+		// Waiting is bounded. A pane that stays busy has to end as a reported
+		// failure with the tab cleaned up, not as a director blocked for good.
+		server := newFakeServer(t, map[string]any{
+			"tab.create":  tabCreatedReply("t1", "p7"),
+			"agent.start": &sequence{replies: []any{paneBusyReply()}},
+		})
+		adapter := server.adapter()
+		adapter.sleep = func(time.Duration) {}
+
+		_, err := adapter.Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		})
+		if err == nil {
+			t.Fatal("Spawn() = nil error, want the busy pane reported once waiting ran out")
+		}
+		if !strings.Contains(err.Error(), "not an available shell") {
+			t.Errorf("Spawn() = %v, want herdr's own reason kept", err)
+		}
+		closed := 0
+		for _, call := range server.calls {
+			if call.Method == "tab.close" {
+				closed++
+			}
+		}
+		if closed != 1 {
+			t.Errorf("Spawn() made %d tab.close calls, want exactly 1", closed)
+		}
+	})
+}
+
+// herdrAgentName is herdr's own rule for an agent name, transcribed from the
+// error the server returns when it rejects one: "must start with a lowercase
+// letter and contain only lowercase letters, digits, '-' or '_' (1-32
+// characters)". herdr checks it before it even looks the pane up, so a name
+// that fails it fails the whole spawn with the tab already created.
+var herdrAgentName = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
+
+func TestSpawnNamesTheAgentSomethingHerdrAccepts(t *testing.T) {
+	t.Parallel()
+	// A tab label and an agent name are two different things wearing one word.
+	// The label is prose herdr takes as given; the name is an identifier herdr
+	// validates. Sending the label as the name fails for any title with a
+	// capital letter or a space in it, which is very nearly every title a
+	// director writes.
+	cases := []struct {
+		name  string
+		label string
+		want  string
+	}{
+		{name: "a written title", label: "Fix herdr spawning", want: "fix-herdr-spawning"},
+		{name: "already a slug", label: "auth-review", want: "auth-review"},
+		{name: "punctuation and runs of space", label: "Decode herdr's replies:  properly", want: "decode-herdr-s-replies-properly"},
+		{name: "leading digits herdr would reject", label: "2 tabs, no pane", want: "tabs-no-pane"},
+		{name: "longer than herdr allows", label: "a title comfortably longer than thirty-two characters", want: "a-title-comfortably-longer-than"},
+		{name: "nothing usable survives", label: "!!! ???", want: "eng_abc123"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			server := newFakeServer(t, map[string]any{
+				"tab.create": tabCreatedReply("t1", "p7"),
+			})
+
+			if _, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
+				ID: "eng_abc123", Dir: "/tmp/x", Name: testCase.label,
+				Allow: harness.AllCapabilities,
+			}); err != nil {
+				t.Fatalf("Spawn() = %v, want no error", err)
+			}
+
+			var started, created map[string]any
+			for _, call := range server.calls {
+				switch call.Method {
+				case "agent.start":
+					started, _ = call.Params.(map[string]any)
+				case "tab.create":
+					created, _ = call.Params.(map[string]any)
+				}
+			}
+			if started == nil {
+				t.Fatal("Spawn() made no agent.start call")
+			}
+			got, _ := started["name"].(string)
+			if !herdrAgentName.MatchString(got) {
+				t.Errorf("agent.start name = %q, which herdr rejects as invalid_agent_name", got)
+			}
+			if got != testCase.want {
+				t.Errorf("agent.start name = %q, want %q", got, testCase.want)
+			}
+
+			// The tab keeps the prose. Slugging the label as well would take the
+			// title out of the one place a person reads it.
+			if label, _ := created["label"].(string); label != testCase.label {
+				t.Errorf("tab.create label = %q, want the title verbatim %q", label, testCase.label)
+			}
+		})
+	}
+}
+
+func TestSpawnWaitsForTheAgentBeforeDeliveringTheBrief(t *testing.T) {
+	t.Parallel()
+	// agent.start returns as soon as the process is launched, with the launch
+	// still pending. herdr refuses to prompt an agent in that window, so a
+	// spawn that goes straight from start to prompt loses the brief — and
+	// reports a herdr error rather than the race that caused it.
+	t.Run("the agent arrives", func(t *testing.T) {
+		t.Parallel()
+		server := newFakeServer(t, map[string]any{
+			"tab.create": tabCreatedReply("t1", "p7"),
+			"agent.list": &sequence{replies: []any{
+				agentListReply(launchingAgent("p7")),
+				agentListReply(launchingAgent("p7")),
+				agentListReply(promptableAgent("p7")),
+			}},
+		})
+		adapter := server.adapter()
+		waits := 0
+		adapter.sleep = func(time.Duration) { waits++ }
+
+		if _, err := adapter.Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		}); err != nil {
+			t.Fatalf("Spawn() = %v, want the pending launch waited out", err)
+		}
+		if waits != 2 {
+			t.Errorf("waited %d times, want 2 — one per launch_pending reply", waits)
+		}
+
+		// The brief has to go out after the wait, not before it.
+		var order []string
+		for _, call := range server.calls {
+			if call.Method == "agent.list" || call.Method == "agent.prompt" {
+				order = append(order, call.Method)
+			}
+		}
+		want := []string{"agent.list", "agent.list", "agent.list", "agent.prompt"}
+		if strings.Join(order, ",") != strings.Join(want, ",") {
+			t.Errorf("Spawn() called %v, want %v", order, want)
+		}
+	})
+
+	t.Run("the agent never arrives", func(t *testing.T) {
+		t.Parallel()
+		// herdr is told an agent is live by its integration, reporting from
+		// inside the agent's own process. With that not installed the wait can
+		// only run out, so the message has to name it — otherwise the failure
+		// looks like herdr misbehaving and gets investigated all over again.
+		server := newFakeServer(t, map[string]any{
+			"tab.create": tabCreatedReply("t1", "p7"),
+			"agent.list": agentListReply(launchingAgent("p7")),
+		})
+		adapter := server.adapter()
+		adapter.sleep = func(time.Duration) {}
+
+		_, err := adapter.Spawn(context.Background(), harness.SpawnRequest{
+			ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+			Allow: harness.AllCapabilities,
+		})
+		if err == nil {
+			t.Fatal("Spawn() = nil error, want the brief refused rather than delivered nowhere")
+		}
+		if !strings.Contains(err.Error(), "integration") {
+			t.Errorf("Spawn() = %v, want the agent integration named as what reports readiness", err)
+		}
+		for _, call := range server.calls {
+			if call.Method == "agent.prompt" {
+				t.Error("Spawn() sent the brief to an agent herdr had not reported ready")
+			}
+		}
+		closed := 0
+		for _, call := range server.calls {
+			if call.Method == "tab.close" {
+				closed++
+			}
+		}
+		if closed != 1 {
+			t.Errorf("Spawn() made %d tab.close calls, want exactly 1", closed)
+		}
+	})
+}
+
+func TestALiveAgentIsNotReportedAsStillStarting(t *testing.T) {
+	t.Parallel()
+	// herdr omits launch_pending and interactive_ready from a live agent
+	// entirely — an agent working away in a pane publishes neither. Requiring
+	// interactive_ready therefore pins every herdr engagement at "starting" for
+	// its whole life, and a director watching for one to begin waits forever.
+	server := newFakeServer(t, map[string]any{
+		"agent.list": agentListReply(map[string]any{
+			"pane_id": "3", "terminal_id": "term1", "workspace_id": "w1",
+			"tab_id": "t1", "focused": true, "agent": "claude",
+			"agent_status": "working", "revision": 691,
+		}),
+	})
+	observation, err := server.adapter().Get(context.Background(), "3")
+	if err != nil {
+		t.Fatalf("Get() = %v, want no error", err)
+	}
+	if observation.Lifecycle != harness.LifecycleWorking {
+		t.Errorf("Lifecycle = %v, want %v for an agent herdr says is working",
+			observation.Lifecycle, harness.LifecycleWorking)
+	}
+}
+
+func TestAFailedSpawnDoesNotLeaveATabBehind(t *testing.T) {
+	t.Parallel()
+	// The tab already exists by the time anything can go wrong, and nothing
+	// downstream can reach it: a spawn the adapter reports as failed leaves no
+	// engagement record, and returns no pane id, so nothing anywhere else names
+	// this tab. The adapter is the last thing that still knows the tab id, so if
+	// it walks away the tab is in herdr's session for good.
+	cases := []struct {
+		name    string
+		failing string
+	}{
+		{name: "the agent will not start", failing: "agent.start"},
+		{name: "the brief cannot be delivered", failing: "agent.prompt"},
+	}
+
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Parallel()
+			server := newFakeServer(t, map[string]any{
+				"tab.create":     tabCreatedReply("t1", "p7"),
+				"agent.list":     agentListReply(promptableAgent("p7")),
+				testCase.failing: &responseError{Code: "internal", Message: "no"},
+			})
+
+			if _, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
+				ID: "eng_abc", Dir: "/tmp/x", Name: "auth-review", Prompt: "do the thing",
+				Allow: harness.AllCapabilities,
+			}); err == nil {
+				t.Fatalf("Spawn() = nil error, want the %s failure reported", testCase.failing)
+			}
+
+			var closed []any
+			for _, call := range server.calls {
+				if call.Method == "tab.close" {
+					closed = append(closed, call.Params)
+				}
+			}
+			if len(closed) != 1 {
+				t.Fatalf("Spawn() made %d tab.close calls, want exactly 1", len(closed))
+			}
+			params, ok := closed[0].(map[string]any)
+			if !ok {
+				t.Fatalf("tab.close params = %T, want an object", closed[0])
+			}
+			if params["tab_id"] != "t1" {
+				t.Errorf("tab.close tab_id = %v, want %q", params["tab_id"], "t1")
+			}
+		})
 	}
 }
 
@@ -218,11 +621,17 @@ func TestReadIsAScreenSnapshot(t *testing.T) {
 	// director concluding an agent was silent when its output simply scrolled
 	// away.
 	server := newFakeServer(t, map[string]any{
-		"pane.read": map[string]any{"pane_id": "p7", "text": "some output", "truncated": true},
+		"pane.read": paneReadReply("p7", "some output", true),
 	})
 	result, err := server.adapter().Read(context.Background(), harness.ReadRequest{Ref: "p7"})
 	if err != nil {
 		t.Fatalf("Read() = %v, want no error", err)
+	}
+	// A read decoded at the wrong nesting level returns no error and an empty
+	// screen, which a director cannot tell from an agent that said nothing. The
+	// screen's contents are therefore the assertion that matters most here.
+	if len(result.Turns) != 1 || result.Turns[0].Text != "some output" {
+		t.Errorf("Turns = %v, want the pane's text; an empty screen reads as a silent agent", result.Turns)
 	}
 	if result.Kind != harness.ReadScreen {
 		t.Errorf("Kind = %v, want %v", result.Kind, harness.ReadScreen)
@@ -366,7 +775,7 @@ func TestSpawnDoesNotForwardAPaneIdentity(t *testing.T) {
 	// the emptied values on could overwrite what herdr sets and leave the pane
 	// unable to recognise itself. The socket is not identity and must survive.
 	server := newFakeServer(t, map[string]any{
-		"tab.create": map[string]any{"tab_id": "t1", "pane_id": "p7"},
+		"tab.create": tabCreatedReply("t1", "p7"),
 	})
 
 	_, err := server.adapter().Spawn(context.Background(), harness.SpawnRequest{
