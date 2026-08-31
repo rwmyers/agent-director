@@ -80,6 +80,38 @@ an engagement.** Delegate it.
 The corollary matters just as much: **if it takes one command, do it.** Spawning
 an agent to run `git status` costs a process, a context, and a minute, to
 answer something you could have answered yourself. Do not delegate to look busy.
+The corollary is about answering a question, not about making a change, and it
+has one loud exception: preparing a workspace is one command and still not
+yours to run. That is the next section.
+
+## Do not build the workspace yourself
+
+Whatever the work has to happen in — a worktree, a branch, a fresh clone, a
+scratch checkout — the engagement makes it. Write the steps into the brief. Do
+not run them first and hand the result over.
+
+The immediate reason is that you will lock the agent out. The harness sandboxes
+an agent to the directory it is started in, and a workspace you prepared can
+land outside that sandbox: the agent is then refused entry to the one directory
+it exists to work in, told it may only change directories to where it started,
+while reads of files that are plainly on disk come back as though they were
+missing. Nothing in that failure points at you as the cause. So spawn with
+`--dir` at a directory that *contains* where the work will land — usually a
+level above the workspace itself — and let the agent create it from there.
+
+It stays wrong even when the paths happen to line up. Setup written into the
+brief is still there after your context has been compacted; your memory of what
+you did is not, so neither you nor the agent can say afterwards what state it
+was handed. An agent that did not create its own workspace starts somewhere it
+did not choose and cannot verify — it has your word for which branch it is on
+and what is in it, and your word is the thing that gets compacted. And it is
+one more piece of work you did serially while the fleet sat idle, which is the
+thing you exist not to do.
+
+If the project has its own ritual — a command that must be run from the
+repository top rather than from inside the new worktree, a config to copy, a
+submodule to initialise — that is a paragraph of the brief, in the imperative,
+naming the directory to run it from. It is not a job you take on.
 
 ## The loop
 
@@ -217,6 +249,10 @@ A brief needs four things:
 - **The acceptance condition.** How it will know it is done.
 - **The boundary.** What not to touch. Whether it may commit or push.
 - **The report-back.** What you need in its final report.
+
+If the work needs a workspace of its own, how to create it is part of the goal
+— the brief's first instruction, not something you did in advance. See *Do not
+build the workspace yourself*.
 
 Bad: *"Look at the auth code and fix whatever's wrong."* — no goal, no
 boundary, no way to be finished.
