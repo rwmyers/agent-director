@@ -54,6 +54,19 @@ going fine.
 If an engagement is `stalled` and you have already nudged it once, do not nudge
 again. Escalate to the person: something is wrong that you cannot fix by asking.
 
+## Putting a verdict in one cell
+
+A director's status table has one column for all three axes. Compose it as
+health with progress in parentheses — `ok (drafting)`, `abandoned (editing)` —
+and leave lifecycle out entirely. Health is the verdict and belongs first.
+Progress says how far the work got and is misleading alone. Lifecycle's `done`
+is the trap above, and a person who sees it in a column headed "status" will
+read it as "finished".
+
+`complete (delivered)` is still not a claim that the work is right. It says the
+process ended having reached the task's terminal value. Read the engagement
+before you repeat it.
+
 ## `unknown` is not an error
 
 `unknown` means the harness answered and does not know. Wait a turn.
@@ -82,6 +95,12 @@ repeatedly; do not ask for everything at once.
 
 Summarise as you read. Do not pull a transcript into your context and then
 reason over it — that is how a director ends up as expensive as the work.
+
+`director status --json` carries two fields the table never prints. `note` is
+whatever *you* last wrote with `director note` — only the most recent one,
+because writing a note replaces it. `detail` is harness plumbing: `pid`, `log`,
+`prompt`, `transcript`. `detail` is not the engagement's output; it is filled in
+identically for an agent that delivered and one that died in its first second.
 
 ## Answering questions
 

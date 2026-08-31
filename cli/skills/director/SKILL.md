@@ -99,9 +99,67 @@ answer something you could have answered yourself. Do not delegate to look busy.
    happened.
 6. **Act.** Answer questions, nudge stalls, stop what is going wrong, spawn
    what the results imply. Then re-arm the wait.
-7. **Report to the person in their terms.** Not in status enums. "The auth
-   review found two real bugs and is waiting on a decision about force-pushing"
-   — not "eng_c90de129 is blocked".
+7. **Report to the person in their terms, then show the table.** Prose first,
+   not status enums: "the auth review found two real bugs and is waiting on a
+   decision about force-pushing" — not "eng_c90de129f4a2b8e1 is blocked". Then
+   the fleet table below, every turn, whole fleet. The prose is what you want
+   them to think about; the table is how they see what you did not mention.
+
+## The status table
+
+Render the whole fleet every turn, after the prose — including the engagements
+with nothing to say. An engagement you stop mentioning is one the person stops
+being able to ask about. Four columns:
+
+| ID | Title | Status | Materials |
+|---|---|---|---|
+| a803 | Status-table reporting in director skill | ok (delivered) | — |
+
+**ID** is the first four hex characters after `eng_`: `eng_a8039e91ec284aec`
+becomes `a803`. Short enough to say out loud and to type back at you. Derive it
+from `director status` fresh every turn rather than keeping a numbering of your
+own — a sequence number that shifts when the fleet changes points at the wrong
+engagement, and nothing in the output will say that it did. If two ids share
+four characters, use six for both rows.
+
+**These handles are for you and the person, not for the tool.** `director`
+matches ids exactly; a prefix is "no such engagement", not a near miss. Expand
+back to the full id before you run any command.
+
+**Title** is the `TITLE` column verbatim. Do not re-word it between turns or the
+person cannot match a row to what you called it last time. It is only as good as
+the `--title` you gave at spawn — without one it is the first sixty characters
+of your brief, which reads as noise. Pass `--title` every time.
+
+**Status** is health with the progress value in parentheses: `ok (drafting)`,
+`stalled (reading)`, `blocked (editing)`, `complete (delivered)`. Health leads
+because health is the verdict. Progress rides along because health alone cannot
+say how far the work got.
+
+Progress must never appear on its own. A bare `editing` on an engagement whose
+process died reads as "still going"; `abandoned (editing)` is the truth, and is
+the entire reason this column is composed rather than picked. **Never put
+lifecycle in this cell** — `done` means only that no process is attached, and
+anyone reading `done` under a heading that says "status" will hear "finished".
+When a row is `blocked`, put the question and the `director answer` command
+under the table, not in the cell.
+
+**Materials** is what the person could go and look at: a branch, a PR, a path, a
+file the agent named. **`director` does not track any of this.** Nothing
+attaches an artifact to an engagement and no command reports one, so this column
+is yours to maintain or it stays empty.
+
+When an agent tells you where its work landed, record it the same turn with
+`director note <id> "<text>"`, and read it back out of `director status --json`
+as `.note`. Two things will catch you out. The note is not in the plain-text
+table — only `--json` has it. And `director note` **replaces** the note rather
+than appending, so re-write the whole accumulated list each time or you will
+quietly lose what you recorded before.
+
+Write `—` when there is nothing yet, and mean it. Do not fill the cell with the
+`detail.transcript` or `detail.log` paths from `--json`: those are present for
+every engagement from the moment it spawns, so using them makes an engagement
+that has produced nothing look exactly like one that has produced something.
 
 ## Do not wait for a turn that may never come
 
@@ -173,6 +231,9 @@ whether the fix is one line or a redesign."*
 `director note <id> "<text>"` when you form the thought, not when you need it.
 Your context will be compacted. The engagement list plus its notes is the
 durable record of what is in flight; your own memory is not.
+It is also the only place the Materials column can come from, so write the
+branch, the PR or the path into the note the turn you learn it — and re-state
+the ones already there, because the note is replaced and not appended to.
 
 ## Two things you must not do
 
