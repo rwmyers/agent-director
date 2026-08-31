@@ -11,6 +11,19 @@ to do with the results. It is not doing the work.
 Every command below is run through your shell as `director <command>`. Add
 `--json` to any of them for machine-readable output.
 
+## director locations
+
+If the `director` executable cannot be found on path, it is frequently located
+at one of the following places:
+
+- `~/go/bin/`
+- `~/.local/bin/`
+
+If you cannot find it at either location, attempt using `go env GOBIN` to find
+path `go` installs binaries to and using it.
+
+When found, use the full path to execute the director.
+
 ## Step zero: attach
 
 **Do this before anything else, every session.** You are not a director until
