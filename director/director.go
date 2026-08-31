@@ -33,7 +33,13 @@ import (
 
 	"github.com/rwmyers/agent-director/harness"
 	"github.com/rwmyers/agent-director/harness/herdr"
+	"github.com/rwmyers/agent-director/internal/conf"
 )
+
+// repairAdvice is what to do about a state file nothing can read. It is said
+// wherever that is discovered, because the alternative somebody reaches for is
+// a text editor on a live director's state file.
+const repairAdvice = "Run `director repair` to see what is wrong, then `director repair --write` to fix it."
 
 // Director is one registered chief of staff and the fleet it owns.
 type Director struct {
@@ -129,6 +135,13 @@ func Open(roots Roots, id string, clock Clock) (*Director, error) {
 	if id != "" {
 		loaded, err := LoadState(statePath(roots.Primary, id))
 		if err != nil {
+			var parseErr *conf.ParseError
+			if errors.As(err, &parseErr) {
+				// The record exists and cannot be read. Say where the damage is
+				// and how to undo it; the alternative is somebody editing a
+				// state file by hand while its fleet keeps running.
+				return nil, fmt.Errorf("director %s cannot be read:\n  %v\n\n%s", id, err, repairAdvice)
+			}
 			if errors.Is(err, os.ErrNotExist) {
 				// Almost always a stale DIRECTOR_ID: a shell outlives the
 				// state file it was told about, or the root moved. Saying only
@@ -142,9 +155,13 @@ func Open(roots Roots, id string, clock Clock) (*Director, error) {
 		}
 		state = loaded
 	} else {
-		states, err := ListDirectors(roots.Primary)
-		if err != nil {
-			return nil, err
+		// An unreadable state file costs its own director, not this command: the
+		// whole point of one file per director is that a bad line in one of them
+		// does not stop work on the others.
+		states, unreadable := ListDirectors(roots.Primary)
+		if len(states) == 0 && unreadable != nil {
+			return nil, fmt.Errorf("no director under %s can be read:\n  %v\n\n%s",
+				roots.Primary, unreadable, repairAdvice)
 		}
 		switch len(states) {
 		case 0:
@@ -867,8 +884,8 @@ func (d *Director) mutate(fn func(state *State) error) error {
 // directors in it is a stale identifier, while an empty root is a project that
 // was never set up — and the fix is different.
 func alternatives(roots Roots, wanted string) string {
-	states, err := ListDirectors(roots.Primary)
-	if err != nil || len(states) == 0 {
+	states, _ := ListDirectors(roots.Primary)
+	if len(states) == 0 {
 		return fmt.Sprintf("There are no directors here at all. If this project has not been set up, run `director init`;\n" +
 			"otherwise check you are in the right directory — `director where` shows which root is in effect.")
 	}

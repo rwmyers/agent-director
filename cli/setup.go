@@ -55,10 +55,9 @@ later would leave a live fleet that nothing could describe.`,
 			// silent: an agent that runs init reflexively would otherwise make
 			// every subsequent command refuse to run, with nothing to explain
 			// why it had started failing.
-			existing, err := director.ListDirectors(roots.Primary)
-			if err != nil {
-				return err
-			}
+			// An unreadable record still counts as a director that exists here,
+			// but it is not a reason to refuse to create one.
+			existing, _ := director.ListDirectors(roots.Primary)
 
 			if workflow == "" {
 				workflow = "default"
@@ -320,10 +319,10 @@ func newDirectorsCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			states, err := director.ListDirectors(roots.Primary)
-			if err != nil {
-				return err
-			}
+			// A director whose record cannot be read is listed as a problem
+			// rather than allowed to hide the ones that can: one bad file used
+			// to mean this command printed nothing at all.
+			states, unreadable := director.ListDirectors(roots.Primary)
 			if opts.asJSON {
 				type row struct {
 					ID          string `json:"id"`
@@ -335,20 +334,30 @@ func newDirectorsCmd() *cobra.Command {
 				for _, state := range states {
 					rows = append(rows, row{state.DirectorID, state.Name, state.Workflow, len(state.Engagements)})
 				}
-				return emit(rows)
+				if err := emit(rows); err != nil {
+					return err
+				}
+				reportUnreadable(unreadable)
+				return nil
 			}
-			if len(states) == 0 {
+			if len(states) == 0 && unreadable == nil {
 				fmt.Printf("no directors under %s; run `director init`\n", roots.Primary)
 				return nil
 			}
-			out := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			if err := writeRow(out, "ID\tNAME\tWORKFLOW\tENGAGEMENTS"+"\n"); err != nil {
-				return err
+			if len(states) > 0 {
+				out := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+				if err := writeRow(out, "ID\tNAME\tWORKFLOW\tENGAGEMENTS"+"\n"); err != nil {
+					return err
+				}
+				for _, state := range states {
+					_ = writeRow(out, "%s\t%s\t%s\t%d\n", state.DirectorID, state.Name, state.Workflow, len(state.Engagements))
+				}
+				if err := out.Flush(); err != nil {
+					return err
+				}
 			}
-			for _, state := range states {
-				_ = writeRow(out, "%s\t%s\t%s\t%d\n", state.DirectorID, state.Name, state.Workflow, len(state.Engagements))
-			}
-			return out.Flush()
+			reportUnreadable(unreadable)
+			return nil
 		},
 	}
 }

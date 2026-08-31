@@ -69,10 +69,10 @@ func TakeSurvey(ctx context.Context, roots Roots, clock Clock) (*Survey, error) 
 	if clock == nil {
 		clock = SystemClock
 	}
-	states, err := ListDirectors(roots.Primary)
-	if err != nil {
-		return nil, err
-	}
+	// A state file nobody can read is not a reason to refuse to survey the ones
+	// that are fine. `director directors` is where an unreadable record gets
+	// named, and `director repair` is where it gets fixed.
+	states, _ := ListDirectors(roots.Primary)
 
 	survey := &Survey{Root: roots.Primary}
 	for _, state := range states {

@@ -90,6 +90,7 @@ a script. Anything that can run a command can drive it.`,
 		newWorkflowsCmd(),
 		newTasksCmd(),
 		newDirectorsCmd(),
+		newRepairCmd(),
 		newRetireCmd(),
 		newHarnessesCmd(),
 
