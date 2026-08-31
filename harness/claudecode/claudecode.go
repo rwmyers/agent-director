@@ -62,6 +62,27 @@ func New() *Adapter {
 // Name identifies the adapter.
 func (a *Adapter) Name() string { return Name }
 
+// SkillLocations tells `director install` where Claude Code looks for skills.
+//
+// It goes through harness.SkillInstaller like anything else. Being built in
+// buys no shortcut: if this adapter could hand the installer a path the public
+// contract cannot carry, the contract would rot until somebody outside this
+// repository needed it.
+//
+// Presence is the existence of the home directory rather than the binary on
+// $PATH, because the directory is what makes an installed skill reachable — a
+// claude on $PATH with no ~/.claude has nothing to read the skills out of.
+func (a *Adapter) SkillLocations() (harness.SkillLocations, error) {
+	_, err := os.Stat(a.Home)
+	return harness.SkillLocations{
+		Description: "Claude Code",
+		GlobalDir:   filepath.Join(a.Home, "skills"),
+		ProjectDir:  filepath.Join(".claude", "skills"),
+		Verified:    true,
+		Present:     err == nil,
+	}, nil
+}
+
 // Enforceable lists what this adapter can control. All six appear because
 // Claude Code's tool allowlist can reach every one of them; whether a given
 // combination is enforceable is Permits' business.

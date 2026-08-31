@@ -38,6 +38,16 @@ func New() *Adapter { return &Adapter{Kind: defaultKind} }
 // Name identifies the adapter.
 func (a *Adapter) Name() string { return Name }
 
+// This adapter deliberately does not implement harness.SkillInstaller, so
+// `director install` passes over it.
+//
+// herdr does not read skills. It opens a pane and launches somebody else's
+// agent in it, and that agent loads skills from its own harness — installing
+// for claude-code is what puts them in front of a claude running under herdr.
+// A herdr entry in the installer would therefore write skills somewhere nothing
+// reads them, and the person who picked it would have no way to tell that from
+// its having worked.
+
 func (a *Adapter) now() time.Time {
 	if a.Now == nil {
 		return time.Now()

@@ -70,9 +70,16 @@ with only a shell can read the same text here:
 				// Where they would go, per harness, rather than a single
 				// answer: skills live wherever each harness looks, and there
 				// is no one director-owned directory that anything reads.
-				for _, candidate := range knownHosts() {
-					fmt.Printf("%-14s global  %s\n", candidate.name, candidate.globalDir())
-					fmt.Printf("%-14s project %s\n", candidate.name, candidate.projectDir("<project>"))
+				for _, candidate := range installTargets() {
+					for _, scope := range []Scope{ScopeGlobal, ScopeProject} {
+						// A harness with no such scope is left out rather than
+						// printed with a blank path.
+						dir, err := targetDir(candidate, scope, "<project>")
+						if err != nil {
+							continue
+						}
+						fmt.Printf("%-14s %-7s %s\n", candidate.name, scope, dir)
+					}
 				}
 				return nil
 			}

@@ -1,6 +1,8 @@
 package claudecode
 
 import (
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -212,6 +214,57 @@ func TestSpawnArgsName(t *testing.T) {
 		args := adapter.spawnArgs(ref, harness.SpawnRequest{Allow: readOnly})
 		if slices.Contains(args, "--name") {
 			t.Errorf("spawnArgs() = %v, want no --name when none was given", args)
+		}
+	})
+}
+
+func TestSkillLocations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("skills go under the Claude Code home", func(t *testing.T) {
+		t.Parallel()
+		// The paths installing used before it read them off the adapter. They
+		// have not changed, and this is what says so.
+		home, _ := os.UserHomeDir()
+
+		locations, err := New().SkillLocations()
+		if err != nil {
+			t.Fatalf("SkillLocations() = %v, want no error", err)
+		}
+		if want := filepath.Join(home, ".claude", "skills"); locations.GlobalDir != want {
+			t.Errorf("GlobalDir = %q, want %q", locations.GlobalDir, want)
+		}
+		if want := filepath.Join(".claude", "skills"); locations.ProjectDir != want {
+			t.Errorf("ProjectDir = %q, want %q", locations.ProjectDir, want)
+		}
+		if locations.Description != "Claude Code" || !locations.Verified {
+			t.Errorf("SkillLocations() = %+v, want the verified Claude Code declaration", locations)
+		}
+	})
+
+	t.Run("presence is whether the home directory exists", func(t *testing.T) {
+		t.Parallel()
+		// The directory rather than the binary: a claude on $PATH with no
+		// ~/.claude has nowhere to read an installed skill from.
+		present := &Adapter{Home: t.TempDir()}
+		locations, err := present.SkillLocations()
+		if err != nil {
+			t.Fatalf("SkillLocations() = %v, want no error", err)
+		}
+		if !locations.Present {
+			t.Error("Present = false for an existing home, want true")
+		}
+
+		absent := &Adapter{Home: filepath.Join(t.TempDir(), "nothing-here")}
+		locations, err = absent.SkillLocations()
+		if err != nil {
+			t.Fatalf("SkillLocations() = %v, want no error", err)
+		}
+		if locations.Present {
+			t.Error("Present = true for a missing home, want false")
+		}
+		if locations.GlobalDir == "" {
+			t.Error("GlobalDir = \"\" for a missing home, want the path offered anyway: detection is a hint, not a gate")
 		}
 	})
 }

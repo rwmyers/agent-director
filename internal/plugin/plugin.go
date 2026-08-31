@@ -142,6 +142,33 @@ type Description struct {
 	Name       string   `json:"name"`
 	Version    string   `json:"version"`
 	Enforces   []string `json:"enforces"`
+	// Skills is where director's skills belong for this harness. Omitting it
+	// says the harness has no place for them, and `director install` passes
+	// over the plugin rather than offering a target it cannot write.
+	Skills *Skills `json:"skills,omitempty"`
+}
+
+// Skills is the optional skills block of a describe reply.
+//
+// A pointer on Description rather than a set of bare fields, because "no skills
+// location" and "a skills location whose fields are all empty" are different
+// answers and the installer acts differently on each.
+type Skills struct {
+	// Description is the harness's name as a person would write it.
+	Description string `json:"description"`
+	// GlobalDir is an absolute directory covering every project; the plugin
+	// expands its own home. Empty means the harness has no global scope.
+	GlobalDir string `json:"global_dir"`
+	// ProjectDir is relative to a repository root. Empty means the harness has
+	// no project scope. Relative because the root is director's to choose.
+	ProjectDir string `json:"project_dir"`
+	// Verified says these paths were confirmed against a real installation
+	// rather than read off documentation.
+	Verified bool `json:"verified"`
+	// Present says the harness looks installed on this machine. It only
+	// pre-selects a checkbox, so a plugin that cannot tell says false and the
+	// target is still offered.
+	Present bool `json:"present"`
 }
 
 // Client runs one plugin. A call is a fresh process, so a Client holds no

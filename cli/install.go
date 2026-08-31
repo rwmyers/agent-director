@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/rwmyers/agent-director/harness"
 	"github.com/spf13/cobra"
 )
 
@@ -23,71 +25,57 @@ const (
 	ScopeGlobal Scope = "global"
 )
 
-// host is a harness director knows how to install skills for.
+// host is a harness that has told the installer where its skills go.
 //
-// This is the one place a harness name legitimately appears on the director
-// side: installing is inherently host-specific — everything else stays neutral.
-// A host director has never heard of is not an error; `director skills --cat`
-// prints the same text for anyone to place by hand.
+// Nothing here knows a harness by name. Every target comes from the registry —
+// built-in adapters, install-only declarations, and director-harness-*
+// executables alike — so a harness director has never heard of becomes
+// installable the moment its declaration is on the machine, with no change to
+// this file. A harness with no answer is simply absent from the list;
+// `director skills --cat` still prints the same text for anyone to place by
+// hand.
 type host struct {
-	name        string
-	description string
-
-	// dirs return where skills live for each scope. Empty means the harness
-	// has no such notion and that scope is not offered for it.
-	globalDir  func() string
-	projectDir func(projectRoot string) string
-
-	// verified records whether these paths were confirmed against a real
-	// installation. An unverified guess must say so rather than look as
-	// authoritative as one that was checked.
-	verified bool
-
-	// detect reports whether this harness appears to be present.
-	detect func() bool
+	name      string
+	locations harness.SkillLocations
 }
 
-func knownHosts() []host {
-	home, _ := os.UserHomeDir()
-
-	return []host{
-		{
-			name:        "claude-code",
-			description: "Claude Code",
-			verified:    true,
-			globalDir:   func() string { return filepath.Join(home, ".claude", "skills") },
-			projectDir: func(root string) string {
-				return filepath.Join(root, ".claude", "skills")
-			},
-			detect: func() bool {
-				_, err := os.Stat(filepath.Join(home, ".claude"))
-				return err == nil
-			},
-		},
-		{
-			name: "antigravity",
-			// Not verified against a real installation — Antigravity is not
-			// present on the machine this was written on, and the paths come
-			// from its documented layout rather than from having been seen to
-			// work. Anyone using this should check the skills were actually
-			// picked up, and `director skills --cat` prints the text to place
-			// by hand if not.
-			description: "Antigravity (paths unverified)",
-			verified:    false,
-			globalDir:   func() string { return filepath.Join(home, ".gemini", "antigravity-cli", "skills") },
-			projectDir: func(root string) string {
-				return filepath.Join(root, ".agents", "skills")
-			},
-			detect: func() bool {
-				_, err := os.Stat(filepath.Join(home, ".gemini"))
-				return err == nil
-			},
-		},
+// installTargets asks every harness that might have an answer where its skills
+// belong.
+//
+// This runs describe on each plugin, which is why it is called once per command
+// and never from inside a loop: enumerating is the only part of director that
+// pays that cost, and it pays it once.
+//
+// Three things are skipped, all quietly except the one that indicates a fault:
+// a harness that answers ErrNoSkillLocations, one whose answer failed, and one
+// that names no directory for either scope — that last would otherwise be
+// offered and then fail at the point of writing.
+func installTargets() []host {
+	var hosts []host
+	for _, candidate := range harness.SkillInstallers() {
+		locations, err := candidate.Installer.SkillLocations()
+		if err != nil {
+			// A harness that declines has said all it means to. One that broke
+			// says so, because a plugin the user installed and then cannot find
+			// in the list is otherwise an unexplainable absence.
+			if !errors.Is(err, harness.ErrNoSkillLocations) {
+				fmt.Fprintf(os.Stderr, "director: %s: %v\n", candidate.Name, err)
+			}
+			continue
+		}
+		if locations.GlobalDir == "" && locations.ProjectDir == "" {
+			continue
+		}
+		if locations.Description == "" {
+			locations.Description = candidate.Name
+		}
+		hosts = append(hosts, host{name: candidate.Name, locations: locations})
 	}
+	return hosts
 }
 
-func lookupHost(name string) (host, bool) {
-	for _, candidate := range knownHosts() {
+func lookupHost(hosts []host, name string) (host, bool) {
+	for _, candidate := range hosts {
 		if candidate.name == name {
 			return candidate, true
 		}
@@ -144,7 +132,7 @@ point your harness at your copy instead.`,
 				if err != nil {
 					return err
 				}
-				fmt.Printf("\n%s (%s):\n", chosen.description, chosenScope)
+				fmt.Printf("\n%s (%s):\n", chosen.locations.Description, chosenScope)
 				for _, path := range written {
 					if dryRun {
 						fmt.Printf("  would write %s\n", path)
@@ -152,7 +140,7 @@ point your harness at your copy instead.`,
 						fmt.Printf("  wrote %s\n", path)
 					}
 				}
-				if !chosen.verified {
+				if !chosen.locations.Verified {
 					fmt.Printf("  note: these paths are not verified against a real %s installation.\n", chosen.name)
 					fmt.Printf("        Check the skills are picked up; if not, place them by hand with `director skills --cat`.\n")
 				}
@@ -200,13 +188,15 @@ func resolveScope(flag string) (Scope, error) {
 // resolveHosts takes the flags or asks, defaulting the selection to whatever
 // looks installed.
 func resolveHosts(names []string) ([]host, error) {
+	available := installTargets()
+
 	if len(names) > 0 {
 		var chosen []host
 		for _, name := range names {
-			found, ok := lookupHost(name)
+			found, ok := lookupHost(available, name)
 			if !ok {
 				var known []string
-				for _, candidate := range knownHosts() {
+				for _, candidate := range available {
 					known = append(known, candidate.name)
 				}
 				return nil, fmt.Errorf("unknown harness %q (known: %s)", name, strings.Join(known, ", "))
@@ -217,15 +207,15 @@ func resolveHosts(names []string) ([]host, error) {
 	}
 
 	var options []huh.Option[string]
-	for _, candidate := range knownHosts() {
-		label := candidate.description
-		if candidate.detect() {
+	for _, candidate := range available {
+		label := candidate.locations.Description
+		if candidate.locations.Present {
 			label += "  (detected)"
 		}
 		option := huh.NewOption(label, candidate.name)
 		// Pre-select what is actually here, so the common case is one keypress
 		// and the uncommon one is still visible.
-		options = append(options, option.Selected(candidate.detect()))
+		options = append(options, option.Selected(candidate.locations.Present))
 	}
 
 	picked, err := newPrompter().selectMany(
@@ -238,7 +228,7 @@ func resolveHosts(names []string) ([]host, error) {
 
 	var chosen []host
 	for _, name := range picked {
-		if found, ok := lookupHost(name); ok {
+		if found, ok := lookupHost(available, name); ok {
 			chosen = append(chosen, found)
 		}
 	}
@@ -248,15 +238,18 @@ func resolveHosts(names []string) ([]host, error) {
 func targetDir(h host, scope Scope, projectRoot string) (string, error) {
 	switch scope {
 	case ScopeGlobal:
-		if h.globalDir == nil {
+		if h.locations.GlobalDir == "" {
 			return "", fmt.Errorf("%s has no global skills location", h.name)
 		}
-		return h.globalDir(), nil
+		return h.locations.GlobalDir, nil
 	case ScopeProject:
-		if h.projectDir == nil {
+		if h.locations.ProjectDir == "" {
 			return "", fmt.Errorf("%s has no project-local skills location; install it globally instead", h.name)
 		}
-		return h.projectDir(projectRoot), nil
+		// Joined here rather than by the harness: the project root is the
+		// installer's to choose, and a harness that answered with an absolute
+		// path would be deciding where somebody else's repository lives.
+		return filepath.Join(projectRoot, h.locations.ProjectDir), nil
 	}
 	return "", fmt.Errorf("unknown scope %q", scope)
 }
@@ -321,9 +314,9 @@ func warnOtherScope(h host, chosen Scope, projectRoot string) {
 		return
 	}
 
-	fmt.Printf("\n  warning: %s also has these skills installed at %s scope:\n", h.description, other)
+	fmt.Printf("\n  warning: %s also has these skills installed at %s scope:\n", h.locations.Description, other)
 	fmt.Printf("             %s\n", dir)
-	fmt.Printf("           %s will show each of them twice, with nothing to tell the copies apart.\n", h.description)
+	fmt.Printf("           %s will show each of them twice, with nothing to tell the copies apart.\n", h.locations.Description)
 	fmt.Printf("           Remove the ones you do not want:\n\n")
 	for _, name := range duplicated {
 		fmt.Printf("             rm -rf %s\n", filepath.Join(dir, name))

@@ -75,6 +75,30 @@ func (a *Adapter) describe() (*plugin.Description, error) {
 	return a.description, a.describeErr
 }
 
+// SkillLocations reports where the plugin says director's skills belong.
+//
+// Present unconditionally, like Read, because the optional-interface probe
+// happens before describe has run; a plugin that declares no skills block
+// returns harness.ErrNoSkillLocations, which the installer reads as a decline
+// rather than as a fault. Asking costs one describe per plugin, which is why
+// only `director install` asks — the rest of director never needs to know.
+func (a *Adapter) SkillLocations() (harness.SkillLocations, error) {
+	description, err := a.describe()
+	if err != nil {
+		return harness.SkillLocations{}, err
+	}
+	if description.Skills == nil {
+		return harness.SkillLocations{}, harness.ErrNoSkillLocations
+	}
+	return harness.SkillLocations{
+		Description: description.Skills.Description,
+		GlobalDir:   description.Skills.GlobalDir,
+		ProjectDir:  description.Skills.ProjectDir,
+		Verified:    description.Skills.Verified,
+		Present:     description.Skills.Present,
+	}, nil
+}
+
 // Enforceable reports what the plugin says it can control.
 func (a *Adapter) Enforceable() []harness.Capability {
 	description, err := a.describe()

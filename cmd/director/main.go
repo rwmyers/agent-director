@@ -20,6 +20,10 @@ package main
 import (
 	"github.com/rwmyers/agent-director/cli"
 
+	// Registers Antigravity as somewhere skills can be installed. It has no
+	// adapter — director cannot drive it — and installing for it does not
+	// require one.
+	_ "github.com/rwmyers/agent-director/harness/antigravity"
 	// Registers the built-in Claude Code adapter.
 	_ "github.com/rwmyers/agent-director/harness/claudecode"
 	// Registers the built-in herdr adapter.

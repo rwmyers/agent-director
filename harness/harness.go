@@ -30,6 +30,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -360,10 +361,138 @@ type ResumeRequest struct {
 	Env  map[string]string
 }
 
+// SkillInstaller is the ability to say where director's skills belong for one
+// harness, so that `director install` can offer it as a target.
+//
+// Being installable and being drivable are separate: a harness may declare
+// where its skills go, may be able to run a conversation, or may do both.
+// Installing needs only a set of paths, which is why this is not part of
+// Adapter — requiring a whole Adapter to place a file would mean a harness
+// director cannot drive could not be installed for either, and the two
+// questions have nothing to do with each other.
+//
+// An Adapter that implements this is offered as an install target
+// automatically. A harness that is only installable registers through
+// RegisterSkillInstaller and never appears in `director harnesses`, because
+// nothing can spawn into it. A harness with no answer — herdr hosts somebody
+// else's agent and has no skills directory of its own — declines by omission
+// rather than being offered a target that cannot be written.
+type SkillInstaller interface {
+	// SkillLocations reports where the skills go and whether the harness looks
+	// present. It returns ErrNoSkillLocations when this harness has no answer.
+	SkillLocations() (SkillLocations, error)
+}
+
+// ErrNoSkillLocations means the harness has no place to put skills. It is an
+// ordinary answer, not a failure, and installing must pass over the harness
+// quietly rather than reporting it as broken.
+//
+// A Go adapter says this by not implementing SkillInstaller at all. The
+// sentinel is for adapters that cannot decide at compile time — a plugin
+// adapter is one Go type standing for every executable on $PATH, so whether it
+// has an answer is only known once the plugin has been asked.
+var ErrNoSkillLocations = errors.New("harness declares no skills location")
+
+// SkillLocations is everything installing needs to know about one harness.
+//
+// It is plain data, and the same shape a plugin returns from describe, so a
+// first-party adapter and an external executable are indistinguishable to the
+// installer. Anything the installer had to know that this could not carry would
+// be a reason for it to special-case a harness name again.
+type SkillLocations struct {
+	// Description is the harness's name as a person would write it, shown in
+	// the picker and above what was written.
+	Description string `json:"description"`
+
+	// GlobalDir is the absolute directory covering every project on this
+	// machine. Empty means the harness has no such notion, and global install
+	// is not offered for it.
+	GlobalDir string `json:"global_dir"`
+
+	// ProjectDir is where skills live inside a repository, relative to its
+	// root. Empty means the harness has no such notion, and project install is
+	// not offered for it.
+	//
+	// Relative rather than a resolved path because the project root is the
+	// installer's to choose: an adapter that returned an absolute path would be
+	// answering a question it was not asked, and would have to be trusted not
+	// to have picked a directory somewhere else entirely.
+	ProjectDir string `json:"project_dir"`
+
+	// Verified records whether these paths were confirmed against a real
+	// installation. An unverified guess must say so rather than look as
+	// authoritative as one that was checked.
+	Verified bool `json:"verified"`
+
+	// Present reports whether the harness appears to be installed here. It
+	// drives which targets are pre-selected, so it is a hint and never a gate:
+	// a harness that is not detected is still offered, because detection is a
+	// guess and refusing to install over it would be unfixable.
+	Present bool `json:"present"`
+}
+
 var (
 	registryMu sync.RWMutex
 	registry   = map[string]Adapter{}
+	installers = map[string]SkillInstaller{}
 )
+
+// RegisterSkillInstaller records where a harness keeps its skills without
+// claiming director can drive it.
+//
+// It is how a harness that has no adapter — one director cannot spawn into, or
+// cannot spawn into yet — still gets installed for. Adapters do not call this:
+// one that implements SkillInstaller is picked up from the adapter registry, so
+// there is one declaration per harness rather than two that can disagree.
+func RegisterSkillInstaller(name string, installer SkillInstaller) {
+	registryMu.Lock()
+	defer registryMu.Unlock()
+	installers[name] = installer
+}
+
+// NamedSkillInstaller is one harness that may have somewhere to put skills.
+type NamedSkillInstaller struct {
+	Name      string
+	Installer SkillInstaller
+}
+
+// SkillInstallers returns every harness worth asking where its skills go,
+// sorted by name: the adapters that implement SkillInstaller, plus the
+// install-only registrations.
+//
+// It returns the installers rather than the answers because asking can be
+// expensive and can fail — an external plugin is a process — and what to do
+// about a harness that will not answer is the caller's decision, not the
+// registry's.
+func SkillInstallers() []NamedSkillInstaller {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+
+	found := map[string]SkillInstaller{}
+	for name, installer := range installers {
+		found[name] = installer
+	}
+	// An adapter wins over an install-only registration of the same name, the
+	// way a built-in adapter wins over a plugin: the thing that can actually
+	// drive the harness is the more authoritative account of it.
+	for name, adapter := range registry {
+		if installer, ok := adapter.(SkillInstaller); ok {
+			found[name] = installer
+		}
+	}
+
+	names := make([]string, 0, len(found))
+	for name := range found {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	ordered := make([]NamedSkillInstaller, 0, len(names))
+	for _, name := range names {
+		ordered = append(ordered, NamedSkillInstaller{Name: name, Installer: found[name]})
+	}
+	return ordered
+}
 
 // Register adds an adapter. Adapters call this from init, and the binary
 // composes its adapter set by importing them for effect.

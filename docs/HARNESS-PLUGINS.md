@@ -67,6 +67,43 @@ permission system, and the failure is silent.
 Declaring `[]` is a perfectly good answer. It means your harness runs
 unrestricted agents, and director will only use it for unrestricted scopes.
 
+#### `skills` — optional
+
+Where director's skills belong for your harness. Declare it and `director
+install` offers your harness as a target, with no change to director itself.
+
+```json
+{"api_version": 1, "name": "demo", "version": "0.1.0", "enforces": [],
+ "skills": {"description": "Demo", "global_dir": "/home/you/.demo/skills",
+            "project_dir": ".demo/skills", "verified": true, "present": true}}
+```
+
+- `description` — your harness's name as a person would write it. It is what the
+  picker shows. Omitted, director falls back to your plugin's name.
+- `global_dir` — an absolute directory covering every project on this machine.
+  Expand `$HOME` yourself; director does not.
+- `project_dir` — **relative to a repository root**, which director joins for
+  you. An absolute path here would be answering a question you were not asked:
+  which repository is being installed into is director's to decide.
+- `verified` — whether these paths were confirmed against a real installation
+  rather than read off documentation. `false` makes installing print a warning
+  telling the user to check the skills were picked up. Say `false` if you are
+  guessing: an unverified path that looks authoritative wastes an afternoon.
+- `present` — whether your harness looks installed here. It only pre-selects a
+  checkbox and is never a gate, so a plugin that cannot tell says `false` and its
+  target is still offered.
+
+Omit the whole block if your harness has no place for skills. director then
+passes over you silently rather than offering a target it cannot write, which is
+an ordinary answer — the built-in herdr adapter gives it, because herdr launches
+somebody else's agent in a pane and that agent loads skills from its own harness.
+Declaring only one of the two directories is fine too; the other scope is simply
+not offered.
+
+None of this requires the rest of the protocol. Being installable and being
+drivable are separate capabilities, and a harness director cannot spawn into can
+still say where its skills go.
+
 ### `spawn`
 
 Start a conversation and **return as soon as it is addressable** — never when
