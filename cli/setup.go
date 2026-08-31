@@ -148,22 +148,21 @@ later would leave a live fleet that nothing could describe.`,
 
 // initRoots decides where `director init` sets things up.
 //
-// Unlike every other command, init creates rather than resolves, and that
-// difference is the whole of this function. Resolution deliberately walks up —
-// a command run in a subdirectory should find its project — and DIRECTOR_ROOT
-// is injected into every spawned agent's environment so a callback finds the
-// root it came from. Both are right for reading. For creating they are a trap:
-// a plain `director init` in a subdirectory, in a sibling worktree, or in an
-// agent shell would register a director in whichever fleet happened to be
-// above it. Nothing said so, and the root it landed in was then left with two
-// directors of the same name, which makes every later command refuse to run
-// until somebody passes --director.
+// Unlike every other command, init creates rather than resolves, and one part
+// of resolution does not survive that change: the walk up. A command run in a
+// subdirectory should find its project, and for reading that is right. For
+// creating it is a trap — a plain `director init` in a subdirectory or in a
+// sibling worktree used to register a director in whichever fleet happened to
+// be above it. Nothing said so, and the root it landed in was then left with
+// two directors of the same name, which makes every later command refuse to
+// run until somebody passes --director.
 //
-// So init uses only a root it was told to use: --config, --global, or a
-// .director in the working directory itself — that last being the ordinary
-// "add another director to the project I am standing in". A root merely found
-// somewhere else is reported and not adopted, with both commands that would
-// resolve the ambiguity, because the one thing init must not do is pick.
+// So a root found only by walking up is reported and not adopted. Everything
+// that names a root outright is honoured, in the same order ResolveRoots uses:
+// --config or --global, then DIRECTOR_ROOT, then a .director in the working
+// directory itself — that last being the ordinary "add another director to the
+// project I am standing in". The line is not how near the root is, it is
+// whether somebody said where it was.
 func initRoots(global bool) (director.Roots, error) {
 	if opts.config != "" || global {
 		return resolveRoots()
@@ -172,6 +171,13 @@ func initRoots(global bool) (director.Roots, error) {
 	if err != nil {
 		return director.Roots{}, err
 	}
+	// DIRECTOR_ROOT is a root somebody named, whether in a setup script or in
+	// the environment director injects into the agents it spawns. Resolution
+	// puts it above the walk up and so does this, so that a root reached by
+	// exporting one variable is the same root every other command would use.
+	if os.Getenv(director.EnvRoot) != "" {
+		return resolveRoots()
+	}
 	here := filepath.Join(wd, director.ProjectDirName)
 
 	if info, statErr := os.Stat(here); statErr == nil && info.IsDir() {
@@ -179,23 +185,17 @@ func initRoots(global bool) (director.Roots, error) {
 	}
 	if found, findErr := director.ResolveRoots("", wd); findErr == nil &&
 		found.Layers[0].Kind == director.LayerProject {
-		return director.Roots{}, foundElsewhere(found.Primary, wd, here)
+		return director.Roots{}, foundAbove(found.Primary, wd, here)
 	}
 	return director.ResolveRoots(here, wd)
 }
 
-// foundElsewhere is what init says instead of adopting somebody else's root.
-func foundElsewhere(found, wd, here string) error {
-	because := "found above this directory"
-	if env := os.Getenv(director.EnvRoot); env != "" {
-		if absolute, err := filepath.Abs(env); err == nil && absolute == found {
-			because = "named by $" + director.EnvRoot + ", which is set in every agent director spawns"
-		}
-	}
-	return fmt.Errorf(`a configuration root already exists, but not in this directory:
+// foundAbove is what init says instead of adopting a root it only found by
+// walking up out of the directory it was run in.
+func foundAbove(found, wd, here string) error {
+	return fmt.Errorf(`a configuration root already exists above this directory:
 
   found:             %s
-                     (%s)
   working directory: %s
 
 init will not adopt a root it was not pointed at: a director registered in a
@@ -207,7 +207,7 @@ else. Say which you meant:
 
   director init --config %s
       make this directory a project root of its own`,
-		found, because, wd, found, here)
+		found, wd, found, here)
 }
 
 // starterConfigPath is the one starter whose contents are decided at init time

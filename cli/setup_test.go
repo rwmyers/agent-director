@@ -286,28 +286,31 @@ func TestInitRefusesARootFoundAboveIt(t *testing.T) {
 	}
 }
 
-func TestInitRefusesTheRootNamedByDirectorRoot(t *testing.T) {
-	// The same accident by the other door: DIRECTOR_ROOT is exported into every
-	// agent director spawns, so init run in one of those shells used to land in
-	// the fleet that spawned it, wherever the agent was working.
+func TestInitHonoursDirectorRoot(t *testing.T) {
+	// The inverse of what this test used to assert. DIRECTOR_ROOT names a root
+	// outright — in a setup script, and in the environment director injects into
+	// the agents it spawns — so init uses it, the same as every other command.
+	// Only the silent walk up out of the working directory is refused; see
+	// TestInitRefusesARootFoundAboveIt for the accident that is about.
+	silenceStdout(t)
 	project := t.TempDir()
-	parentRoot := filepath.Join(project, director.ProjectDirName)
-	establishRoot(t, parentRoot, "fake-alpha")
-	before := directorCount(t, parentRoot)
+	root := filepath.Join(project, director.ProjectDirName)
+	establishRoot(t, root, "fake-alpha")
+	before := directorCount(t, root)
 
-	t.Setenv(director.EnvRoot, parentRoot)
-	t.Chdir(t.TempDir())
-	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true})
+	elsewhere := t.TempDir()
+	t.Setenv(director.EnvRoot, root)
+	t.Chdir(elsewhere)
+	setInitPrompter(t, answering("1\n"))
 
-	err := runDirector(t, "init")
-	if err == nil {
-		t.Fatal("init = nil, want a refusal rather than adopting $DIRECTOR_ROOT")
+	if err := runDirector(t, "init"); err != nil {
+		t.Fatalf("init with $DIRECTOR_ROOT set = %v, want it honoured", err)
 	}
-	if !strings.Contains(err.Error(), director.EnvRoot) {
-		t.Errorf("error = %q, want it to say where the root came from", err)
+	if got := directorCount(t, root); got != before+1 {
+		t.Errorf("directors under $DIRECTOR_ROOT = %d, want %d", got, before+1)
 	}
-	if got := directorCount(t, parentRoot); got != before {
-		t.Errorf("directors under $DIRECTOR_ROOT = %d, want it untouched at %d", got, before)
+	if _, statErr := os.Stat(filepath.Join(elsewhere, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
+		t.Errorf("os.Stat(cwd .director) = %v, want init to have used the named root instead", statErr)
 	}
 }
 
