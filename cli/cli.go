@@ -107,6 +107,7 @@ a script. Anything that can run a command can drive it.`,
 		newNudgeCmd(),
 		newAnswerCmd(),
 		newStopCmd(),
+		newRemoveCmd(),
 		newNoteCmd(),
 
 		newReportCmd(),
