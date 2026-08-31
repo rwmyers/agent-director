@@ -18,6 +18,47 @@ eng_a4b17f20 asked: May I force-push to feat/auth?
   answer with: director answer ask_578fc0d2 "..."
 ```
 
+## Getting started
+
+Two separate things, done by two different people at two different times.
+
+**Setting up a project — a person, once.** `director init` writes a
+`.director/` root into the repository: workflows, task types, prompts, the
+harness default. Those are decisions about how *this* project delegates work,
+they belong in version control, and no agent should be making them.
+
+```sh
+make install
+cd your-project
+director init                       # writes .director/ with starter workflows
+director install                    # put the director skills where your harness finds them
+$EDITOR .director/workflows/*.conf  # make the task types yours
+```
+
+**Starting a directing session — an agent, every conversation.** `director
+attach` works out whether to take over a director that is already running or
+start a fresh one, and says why.
+
+```sh
+director attach
+# attached to director dir_b3a3e06f (lead), workflow "goproj"
+# because: lead has 1 engagement(s) waiting and nobody tending them
+#
+# You have inherited 1 engagement(s). Deal with anything waiting before starting new work:
+# ID            HEALTH   LIFECYCLE  PROGRESS  SILENT  TITLE
+# eng_9e6acceb  blocked  working    editing   14m     migrate the config parser
+```
+
+It attaches when exactly one director is unattended, prefers whoever has work
+waiting, creates a new one when every director is already being driven by
+another conversation — and **refuses to choose** when two unattended directors
+both have work, because nothing distinguishes them and picking wrong means
+quietly operating on somebody else's fleet.
+
+Attaching records a claim that expires after 30 minutes, which is the only
+signal available that another conversation is already here: two conversations
+on one fleet would both spawn, both answer, and share a read cursor.
+
 ## What it is, and is not
 
 It is a **substrate**, not an agent. The director — the thing that decides what
@@ -165,47 +206,6 @@ A director's state file is the only thing mapping an engagement back to its
 harness, so `retire` refuses while anything is alive rather than leaving agents
 running that nothing can reach. `--stop` ends them first; `--force` orphans
 them deliberately and says which.
-
-## Getting started
-
-Two separate things, done by two different people at two different times.
-
-**Setting up a project — a person, once.** `director init` writes a
-`.director/` root into the repository: workflows, task types, prompts, the
-harness default. Those are decisions about how *this* project delegates work,
-they belong in version control, and no agent should be making them.
-
-```sh
-make install
-cd your-project
-director init                       # writes .director/ with starter workflows
-director install                    # put the director skills where your harness finds them
-$EDITOR .director/workflows/*.conf  # make the task types yours
-```
-
-**Starting a directing session — an agent, every conversation.** `director
-attach` works out whether to take over a director that is already running or
-start a fresh one, and says why.
-
-```sh
-director attach
-# attached to director dir_b3a3e06f (lead), workflow "goproj"
-# because: lead has 1 engagement(s) waiting and nobody tending them
-#
-# You have inherited 1 engagement(s). Deal with anything waiting before starting new work:
-# ID            HEALTH   LIFECYCLE  PROGRESS  SILENT  TITLE
-# eng_9e6acceb  blocked  working    editing   14m     migrate the config parser
-```
-
-It attaches when exactly one director is unattended, prefers whoever has work
-waiting, creates a new one when every director is already being driven by
-another conversation — and **refuses to choose** when two unattended directors
-both have work, because nothing distinguishes them and picking wrong means
-quietly operating on somebody else's fleet.
-
-Attaching records a claim that expires after 30 minutes, which is the only
-signal available that another conversation is already here: two conversations
-on one fleet would both spawn, both answer, and share a read cursor.
 
 ## Commands
 
