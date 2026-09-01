@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -220,6 +223,111 @@ func TestDiscoverBesideTheBinary(t *testing.T) {
 	})
 }
 
+// busy is the failure the kernel reports for an executable that something still
+// holds open for writing, shaped the way exec.Cmd.Start reports it.
+func busy(path string) error {
+	return &fs.PathError{Op: "fork/exec", Path: path, Err: syscall.ETXTBSY}
+}
+
+func TestRetryWhileBusy(t *testing.T) {
+	t.Parallel()
+	// The failure is injected rather than raced for: what is under test is the
+	// policy — what is retried, how often, and what stops it — and that answer
+	// has to be the same every run.
+
+	t.Run("an executable that stops being written is started", func(t *testing.T) {
+		t.Parallel()
+		attempts := 0
+		err := retryWhileBusy(context.Background(), func() error {
+			attempts++
+			if attempts < 3 {
+				return busy("/somewhere/" + Prefix + "installing")
+			}
+			return nil
+		})
+
+		if err != nil {
+			t.Fatalf("retryWhileBusy() = %v, want the start that eventually succeeded", err)
+		}
+		if attempts != 3 {
+			t.Errorf("attempts = %d, want it to keep trying until the writer let go", attempts)
+		}
+	})
+
+	t.Run("any other failure to start is returned at once", func(t *testing.T) {
+		t.Parallel()
+		// A plugin that is missing, unreadable or the wrong architecture is
+		// broken now and will be broken in a second, and must say so now.
+		refused := errors.New("permission denied")
+		attempts := 0
+		began := time.Now()
+
+		err := retryWhileBusy(context.Background(), func() error {
+			attempts++
+			return refused
+		})
+
+		if !errors.Is(err, refused) {
+			t.Fatalf("retryWhileBusy() = %v, want the underlying failure unchanged", err)
+		}
+		if attempts != 1 {
+			t.Errorf("attempts = %d, want exactly one — only ETXTBSY is worth another try", attempts)
+		}
+		if waited := time.Since(began); waited > busyDelay {
+			t.Errorf("returned after %s, want no backoff at all for a permanent failure", waited)
+		}
+	})
+
+	t.Run("an executable that never frees up gives up, naming the condition", func(t *testing.T) {
+		t.Parallel()
+		attempts := 0
+		began := time.Now()
+
+		err := retryWhileBusy(context.Background(), func() error {
+			attempts++
+			return busy("/somewhere/" + Prefix + "wedged")
+		})
+
+		if attempts != busyAttempts {
+			t.Fatalf("attempts = %d, want the loop to stop after %d", attempts, busyAttempts)
+		}
+		if !errors.Is(err, errBusyExecutable) {
+			t.Errorf("retryWhileBusy() = %v, want it to name the condition", err)
+		}
+		if !errors.Is(err, syscall.ETXTBSY) {
+			t.Errorf("retryWhileBusy() = %v, want the underlying syscall kept as well", err)
+		}
+		if waited := time.Since(began); waited > DescribeTimeout {
+			t.Errorf("gave up after %s, want it inside the first call's own budget", waited)
+		}
+	})
+
+	t.Run("a finished context outranks the backoff", func(t *testing.T) {
+		t.Parallel()
+		// Somebody who has already stopped caring must not be held for the rest
+		// of the schedule.
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		attempts := 0
+		began := time.Now()
+
+		err := retryWhileBusy(ctx, func() error {
+			attempts++
+			return busy("/somewhere/" + Prefix + "wedged")
+		})
+
+		if attempts != 1 {
+			t.Errorf("attempts = %d, want the cancelled context to end it immediately", attempts)
+		}
+		if !errors.Is(err, syscall.ETXTBSY) {
+			t.Errorf("retryWhileBusy() = %v, want the failure it stopped on", err)
+		}
+		if waited := time.Since(began); waited > busyDelay {
+			t.Errorf("returned after %s, want no waiting once the context is done", waited)
+		}
+	})
+}
+
 func TestDescribe(t *testing.T) {
 	t.Parallel()
 
@@ -336,6 +444,34 @@ func TestCall(t *testing.T) {
 			}
 		case <-time.After(10 * time.Second):
 			t.Fatal("Call() never returned; the timeout is not being enforced")
+		}
+	})
+
+	t.Run("a plugin still being written is run once the writer lets go", func(t *testing.T) {
+		t.Parallel()
+		// What a person meets during `go install` or an upgrade: the file is
+		// there and correct, and for a moment the kernel will not execute it
+		// because somebody still holds it open for writing.
+		dir := t.TempDir()
+		path := writePlugin(t, dir, "installing", `echo '{"ref":"r1"}'`)
+
+		holder, err := os.OpenFile(path, os.O_WRONLY, 0o600)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var once sync.Once
+		release := func() { once.Do(func() { _ = holder.Close() }) }
+		t.Cleanup(release)
+		time.AfterFunc(20*time.Millisecond, release)
+
+		var result struct {
+			Ref string `json:"ref"`
+		}
+		if err := New(Found{Name: "installing", Path: path}).Call(context.Background(), "get", nil, &result); err != nil {
+			t.Fatalf("Call() = %v, want the call to wait the writer out and succeed", err)
+		}
+		if result.Ref != "r1" {
+			t.Errorf("result = %+v, want the plugin's reply", result)
 		}
 	})
 

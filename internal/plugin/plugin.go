@@ -45,6 +45,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -67,11 +68,29 @@ const (
 	// orphanGrace is how long a killed plugin's descendants are given to
 	// release its output pipe before director stops waiting on them.
 	orphanGrace = 2 * time.Second
+	// busyAttempts and busyDelay bound how long starting a plugin waits out an
+	// executable that is still being written: ten attempts, the first backoff a
+	// millisecond and each one twice the last, so a shade over a second in all.
+	//
+	// A millisecond to begin with because the usual window is shorter than that
+	// — a descriptor held across somebody else's fork — and doubling because the
+	// other window is a whole binary being written, which is tens to hundreds of
+	// milliseconds and worth waiting through rather than polling at. The total
+	// is chosen against DescribeTimeout: even a plugin whose file never stops
+	// being written fails well inside the budget of the first call made to it,
+	// so asking director what harnesses exist still answers.
+	busyAttempts = 10
+	busyDelay    = time.Millisecond
 )
 
 // ErrUnsupportedAPI is returned when a plugin speaks a protocol version this
 // director does not.
 var ErrUnsupportedAPI = errors.New("unsupported plugin api version")
+
+// errBusyExecutable names the condition behind a bare ETXTBSY, which reads as
+// "text file busy" and tells nobody anything. It is what a caller sees when the
+// plugin's file was still being written every time director tried to start it.
+var errBusyExecutable = errors.New("plugin executable is still being written")
 
 // Found is a discovered executable that has not been run yet. Discovery reads
 // directory entries only, so finding plugins costs nothing until one is used —
@@ -307,24 +326,7 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, verb string, p
 	defer cancel()
 
 	var stdout, stderr bytes.Buffer
-	// #nosec G204 -- c.Path is not caller-supplied: it is a director-harness-*
-	// file discovery found in a directory the user already trusts to hold
-	// executables, either a $PATH entry or the directory the running director
-	// binary sits in. The second is no weaker than the first — anyone who can
-	// write next to director can replace director.
-	cmd := exec.CommandContext(ctx, c.Path, verb)
-	cmd.Stdin = bytes.NewReader(body)
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	// Killing the plugin on timeout is not enough on its own. Anything it
-	// spawned inherits the output pipe and can hold it open after its parent is
-	// gone, and Wait does not return until that pipe closes — so without a
-	// WaitDelay a plugin that leaves a child behind wedges director anyway,
-	// which is the one thing the timeout exists to prevent. After the delay the
-	// pipes are closed regardless and whatever has been read so far is what we
-	// get.
-	cmd.WaitDelay = orphanGrace
-	runErr := cmd.Run()
+	runErr := c.run(ctx, verb, body, &stdout, &stderr)
 
 	c.logStderr(verb, stderr.Bytes())
 
@@ -347,6 +349,107 @@ func (c *Client) call(ctx context.Context, timeout time.Duration, verb string, p
 		return fmt.Errorf("%s %s: decoding reply: %w", c, verb, err)
 	}
 	return nil
+}
+
+// run executes the plugin once and collects its output, waiting out an
+// executable that is still being written.
+//
+// ETXTBSY is not a plugin that cannot be run; it is a plugin that cannot be run
+// yet. The kernel refuses to execute a file while any process still holds it
+// open for writing, so director meets it whenever it starts a plugin in the
+// same moment something else is writing that file: `go install` rewriting
+// director and its harness plugins into ~/go/bin together, a package manager
+// replacing an adapter in place under an upgrade, or an unrelated process on
+// the machine that happened to fork while the file was open and now holds an
+// inherited descriptor to it. Every one of those is transient by construction —
+// the writer closes, the last descriptor goes away, and the identical path
+// becomes executable again, usually within a millisecond. Reporting it as a
+// failure would blame a harness for a scheduling coincidence, and would send
+// somebody to investigate a plugin that works perfectly when they run it by
+// hand a second later.
+//
+// So this waits the condition out rather than treating it as a verdict, and
+// waits out only this condition. Any other reason a plugin will not start — the
+// file is gone, it is not executable, it is the wrong architecture, its
+// interpreter is missing — is permanent, and is returned on the first attempt
+// exactly as the kernel reported it. The waiting is bounded, so a file that
+// genuinely never stops being written still fails, and fails quickly enough
+// that a director listing its harnesses answers instead of hanging.
+//
+// Only starting is retried, never a call that already began. ETXTBSY comes out
+// of execve, so the plugin has not run and has had no opportunity to do
+// anything; once the process is started, whatever happens next is the plugin's
+// own answer and belongs to the caller unaltered. Each attempt builds a fresh
+// command and rewinds the request, because a Cmd is not reusable and the
+// process must be handed the whole envelope.
+func (c *Client) run(ctx context.Context, verb string, body []byte, stdout, stderr *bytes.Buffer) error {
+	var cmd *exec.Cmd
+	if err := retryWhileBusy(ctx, func() error {
+		stdout.Reset()
+		stderr.Reset()
+		cmd = c.command(ctx, verb, body, stdout, stderr)
+		return cmd.Start()
+	}); err != nil {
+		return err
+	}
+	return cmd.Wait()
+}
+
+// retryWhileBusy calls start until it returns something other than ETXTBSY, or
+// until the attempts run out.
+//
+// It is the retry policy on its own, separate from the process it is applied
+// to: what counts as worth another attempt, how long to wait between them, and
+// when to stop. Anything start returns that is not ETXTBSY — including success
+// — is the answer, handed back on the first attempt without a moment's delay.
+// A context that is already done outranks the remaining backoff, so a caller
+// past its deadline is never held for a file it no longer wants; the ETXTBSY
+// itself is returned in that case and the caller reports its own deadline.
+// Exhausting the attempts names the condition rather than passing on a bare
+// "text file busy", which describes nothing a reader can act on.
+func retryWhileBusy(ctx context.Context, start func() error) error {
+	began := time.Now()
+	delay := busyDelay
+	for attempt := 1; ; attempt++ {
+		err := start()
+		if !errors.Is(err, syscall.ETXTBSY) {
+			return err
+		}
+		if attempt == busyAttempts {
+			return fmt.Errorf("%w: %d attempts over %s: %w",
+				errBusyExecutable, attempt, time.Since(began).Round(time.Millisecond), err)
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return err
+		case <-timer.C:
+		}
+		delay *= 2
+	}
+}
+
+// command builds one attempt's process.
+func (c *Client) command(ctx context.Context, verb string, body []byte, stdout, stderr *bytes.Buffer) *exec.Cmd {
+	// #nosec G204 -- c.Path is not caller-supplied: it is a director-harness-*
+	// file discovery found in a directory the user already trusts to hold
+	// executables, either a $PATH entry or the directory the running director
+	// binary sits in. The second is no weaker than the first — anyone who can
+	// write next to director can replace director.
+	cmd := exec.CommandContext(ctx, c.Path, verb)
+	cmd.Stdin = bytes.NewReader(body)
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
+	// Killing the plugin on timeout is not enough on its own. Anything it
+	// spawned inherits the output pipe and can hold it open after its parent is
+	// gone, and Wait does not return until that pipe closes — so without a
+	// WaitDelay a plugin that leaves a child behind wedges director anyway,
+	// which is the one thing the timeout exists to prevent. After the delay the
+	// pipes are closed regardless and whatever has been read so far is what we
+	// get.
+	cmd.WaitDelay = orphanGrace
+	return cmd
 }
 
 // decodeError returns the message from an {"error": "..."} reply, or "" when
