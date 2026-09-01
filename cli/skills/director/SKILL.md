@@ -112,9 +112,10 @@ an agent to the directory it is started in, and a workspace you prepared can
 land outside that sandbox: the agent is then refused entry to the one directory
 it exists to work in, told it may only change directories to where it started,
 while reads of files that are plainly on disk come back as though they were
-missing. Nothing in that failure points at you as the cause. So spawn with
-`--dir` at a directory that *contains* where the work will land — usually a
-level above the workspace itself — and let the agent create it from there.
+missing. Nothing in that failure points at you as the cause. The agent starts
+where you are when you spawn it, so be in a directory that *contains* where the
+work will land — usually a level above the workspace itself — and let the agent
+create it from there. The spawn prints the directory it used; read it back.
 
 It stays wrong even when the paths happen to line up. Setup written into the
 brief is still there after your context has been compacted; your memory of what

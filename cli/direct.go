@@ -13,7 +13,7 @@ import (
 )
 
 func newSpawnCmd() *cobra.Command {
-	var task, title, name, dir, harnessName, file string
+	var task, title, name, harnessName, file string
 
 	cmd := &cobra.Command{
 		Use:   "spawn [brief]",
@@ -24,7 +24,12 @@ agent has not done anything yet.
 The brief is the entire specification the agent receives. It shares none of
 your context, none of the original wording of whatever prompted this, and
 nothing any other engagement has found. Write it for a competent stranger:
-the goal, what "done" looks like, what not to touch, and what to report back.`,
+the goal, what "done" looks like, what not to touch, and what to report back.
+
+The agent starts in the directory this command is run from, and the harness
+sandboxes it there — so run the spawn from a directory that contains where the
+work will land, and let the brief tell the agent to create the rest. Every
+spawn prints where it put the agent.`,
 		Args: cobra.RangeArgs(0, 1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			// Before open(), so an unreadable brief costs nothing: a spawn is
@@ -42,7 +47,6 @@ the goal, what "done" looks like, what not to touch, and what to report back.`,
 				Title:   title,
 				Name:    name,
 				Brief:   brief,
-				Dir:     dir,
 				Harness: harnessName,
 			})
 			if err != nil {
@@ -52,6 +56,13 @@ the goal, what "done" looks like, what not to touch, and what to report back.`,
 				return emit(engagement)
 			}
 			fmt.Printf("%s  %s  [%s on %s]\n", engagement.ID, engagement.Title, engagement.Task, engagement.Harness)
+			// Where the agent starts, always. Nothing in the command names it
+			// — it is wherever this process is running — so a working directory
+			// that drifted a level down would otherwise move every agent
+			// silently. The harness sandboxes the agent to this directory,
+			// which makes it the one fact worth reading back before the spawn is
+			// ten minutes old.
+			fmt.Printf("  starting in %s\n", engagement.Dir)
 			// Placement decided by where this director is running rather than by
 			// the configuration. Said out loud, because otherwise the only way to
 			// find out why an engagement landed somewhere unexpected is to guess.
@@ -64,7 +75,6 @@ the goal, what "done" looks like, what not to touch, and what to report back.`,
 	cmd.Flags().StringVar(&task, "task", "", "task type from this director's workflow (required)")
 	cmd.Flags().StringVar(&title, "title", "", "short label shown by director (default: first line of the brief)")
 	cmd.Flags().StringVar(&name, "name", "", "how the harness should label this conversation in its own UI (default: the title)")
-	cmd.Flags().StringVar(&dir, "dir", "", "working directory for the agent (default: cwd)")
 	cmd.Flags().StringVar(&harnessName, "harness", "", "override the workflow's placement")
 	cmd.Flags().StringVar(&file, "file", "", "read the brief from a file, or from standard input with -")
 	_ = cmd.MarkFlagRequired("task")

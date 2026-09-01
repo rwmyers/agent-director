@@ -65,10 +65,11 @@ Mostly you would be locking the agent out rather than helping it. The harness
 sandboxes an agent to the directory it starts in, so a workspace you created
 can sit outside that sandbox, and the agent is then refused every attempt to
 enter the one directory you meant it to work in — a failure that reads as
-missing files rather than as something you did. Point `--dir` at a directory
-that contains where the work will land and let the agent make the rest. The
-setup then survives in the brief after your own context is compacted, and the
-agent starts in a state it made and can check rather than one it was handed.
+missing files rather than as something you did. The agent starts where you are
+when you spawn it, so spawn from a directory that contains where the work will
+land and let the agent make the rest. The setup then survives in the brief
+after your own context is compacted, and the agent starts in a state it made
+and can check rather than one it was handed.
 
 So write it as the first instruction, in the imperative, naming the directory
 to run it from: *"run `<setup command>` from `<path>`, then do your work in
@@ -109,8 +110,13 @@ than widen it, and tell the person afterwards what you assumed.
 
 ```sh
 director spawn "<brief>" --task <type> --title "<short label>" \
-  --name <harness-label> --dir <path>
+  --name <harness-label>
 ```
+
+**The agent starts in the directory you run this from.** Check where you are
+first, and read back the `starting in` line the spawn prints — a working
+directory that drifted a level down moves every agent you spawn, and nothing in
+the command says so.
 
 **Always pass `--title`.** Without it the title is the first line of the
 brief cut at sixty characters, so the status table fills with truncated

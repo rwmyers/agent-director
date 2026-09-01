@@ -420,7 +420,6 @@ type SpawnOptions struct {
 	// interface. Optional; derived from the title when empty.
 	Name    string
 	Brief   string
-	Dir     string
 	Harness string
 }
 
@@ -453,12 +452,23 @@ func (d *Director) Spawn(ctx context.Context, opts SpawnOptions) (*Engagement, e
 		return nil, fmt.Errorf("task %q requires permission scope %q: %w", task.Name, permission.Name, err)
 	}
 
-	dir := opts.Dir
-	if dir == "" {
-		dir, err = os.Getwd()
-		if err != nil {
-			return nil, err
-		}
+	// Where the agent starts is not a caller's to choose. It is this process's
+	// working directory, and nothing else.
+	//
+	// The harness sandboxes an agent to the directory it is started in, so any
+	// directory named from outside can be one the agent cannot work in: a path
+	// that does not exist yet, or that sits below the workspace instead of
+	// above it, locks the agent out of the only directory it exists to work in
+	// — reported to it as missing files, and pointing at nothing. A directory
+	// this process is already running in cannot be that: it exists, and
+	// whatever the director can reach from it, the agent can too.
+	//
+	// The cost is that the answer moves with the shell, silently, and nothing
+	// in the command records it. Every front end is therefore expected to say
+	// where it put the agent; Dir is stored on the engagement so it can.
+	dir, err := os.Getwd()
+	if err != nil {
+		return nil, err
 	}
 
 	id, err := newID(engagementPrefix)
