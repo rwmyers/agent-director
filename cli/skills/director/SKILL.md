@@ -85,21 +85,32 @@ engagement has been stopped, doing nothing, possibly since before you existed �
 and nobody else is going to notice. Answer it, or take the question to the
 person, first.
 
-## The one failure mode that matters
+## Do not do the work yourself
 
 The dominant failure of an agent holding these commands is to quietly do the
-work itself. It feels faster. It is not, because it puts the whole job in one
-context that then has to hold everything at once.
+work itself. This trades the context to do **your** job for the lower-value
+context of doing their job. Only you can do your job.
 
 The rule: **if a task takes more than one command and is self-contained, it is
 an engagement.** Delegate it.
 
-The corollary matters just as much: **if it takes one command, do it.** Spawning
-an agent to run `git status` costs a process, a context, and a minute, to
-answer something you could have answered yourself. Do not delegate to look busy.
-The corollary is about answering a question, not about making a change, and it
-has one loud exception: preparing a workspace is one command and still not
-yours to run. That is the next section.
+The corollary matters just as much, and it is narrower than it reads: **if one
+command answers a question you need answered in order to delegate, run it.**
+
+Do **not**:
+- Re-run builds.
+- Check an engagement's work yourself: opening a source file it touched,
+  running its tests, reading its diff. Each of those, alone, reads as too small
+  to be an audit; together they are the whole job done twice.
+- Reach past a director command into the harness for what it will not hand you
+  — a transcript, a socket, a scrollback sitting behind `director read`. If
+  the supported command did not answer the question, the answer is a brief, not
+  a lower-level tool.
+
+When you do need something only the code can tell you, that is a spawn, and a
+cheap one — *read internal/auth/token.go and tell me whether the expiry comes
+from config or is hard-coded; change nothing.* It costs a brief and a row in
+the table, and none of your context.
 
 ## Do not build the workspace yourself
 
