@@ -13,6 +13,21 @@ import (
 	"github.com/rwmyers/agent-director/harness/herdr"
 )
 
+// TestMain clears the environment a director hands its agents.
+//
+// The suite is otherwise not hermetic: DIRECTOR_ID selects which director Open
+// acts as, so running the tests from inside an engagement — which is exactly
+// how this repository gets worked on — makes a dozen of them fail on a
+// director that belongs to somebody else's fleet. The root and the callback
+// credentials go with it, since a test must never be able to report into a
+// live director.
+func TestMain(m *testing.M) {
+	for _, key := range []string{EnvRoot, EnvID, EnvEngagement, EnvToken, EnvTask, EnvProgress} {
+		_ = os.Unsetenv(key)
+	}
+	os.Exit(m.Run())
+}
+
 // fakeAdapter records what the core asked it to do, so a test can assert that
 // the core asked for nothing more — a spawn that quietly proceeded past a
 // refused permission check would otherwise pass every other assertion.
@@ -20,6 +35,7 @@ type fakeAdapter struct {
 	name        string
 	permitErr   error
 	spawnErr    error
+	sendErr     error
 	spawns      []harness.SpawnRequest
 	sends       []harness.SendRequest
 	observation harness.Observation
@@ -40,7 +56,7 @@ func (f *fakeAdapter) Spawn(_ context.Context, req harness.SpawnRequest) (harnes
 
 func (f *fakeAdapter) Send(_ context.Context, req harness.SendRequest) error {
 	f.sends = append(f.sends, req)
-	return nil
+	return f.sendErr
 }
 
 func (f *fakeAdapter) Get(context.Context, string) (harness.Observation, error) {
@@ -92,6 +108,10 @@ report_on   = progress-change, 5m
 	// director inside a herdr pane spawns into panes, and a test that inherited
 	// that would pass or fail according to whose terminal ran it.
 	d.InPane = func() (string, bool) { return "", false }
+	// Same reason: working out where the DIRECTOR is sitting walks the
+	// registry, and the suite must not detect the herdr pane or Claude Code
+	// conversation the test binary happens to have been started in.
+	d.Names = func() []string { return []string{adapter.name} }
 	return d
 }
 
@@ -211,7 +231,7 @@ func TestReport(t *testing.T) {
 	t.Run("an engagement's own token is accepted", func(t *testing.T) {
 		t.Parallel()
 		d, engagement := spawn(t)
-		if _, err := d.Report(engagement.ID, engagement.Token, "reading", "halfway"); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "reading", "halfway"); err != nil {
 			t.Fatalf("Report() = %v, want no error", err)
 		}
 		if got := d.State.Engagements[engagement.ID].Progress; got != "reading" {
@@ -224,7 +244,7 @@ func TestReport(t *testing.T) {
 		// Without this an agent could move a sibling's progress or answer for
 		// it, and nothing in the output would reveal that it had happened.
 		d, engagement := spawn(t)
-		_, err := d.Report(engagement.ID, "not-the-right-token", "reading", "")
+		_, err := d.Report(context.Background(), engagement.ID, "not-the-right-token", "reading", "")
 		if err == nil {
 			t.Fatal("Report() = nil error, want a rejection")
 		}
@@ -236,7 +256,7 @@ func TestReport(t *testing.T) {
 	t.Run("progress outside the task's vocabulary is refused, and the valid set is named", func(t *testing.T) {
 		t.Parallel()
 		d, engagement := spawn(t)
-		_, err := d.Report(engagement.ID, engagement.Token, "vibing", "")
+		_, err := d.Report(context.Background(), engagement.ID, engagement.Token, "vibing", "")
 		if err == nil {
 			t.Fatal("Report() = nil error, want a rejection")
 		}
@@ -257,7 +277,7 @@ func TestReport(t *testing.T) {
 		if d.State.Engagements[engagement.ID].NudgedAt.IsZero() {
 			t.Fatal("Nudge() did not record when it happened")
 		}
-		if _, err := d.Report(engagement.ID, engagement.Token, "reading", ""); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "reading", ""); err != nil {
 			t.Fatalf("Report() = %v, want no error", err)
 		}
 		if !d.State.Engagements[engagement.ID].NudgedAt.IsZero() {
@@ -279,7 +299,7 @@ func TestAskBlocksAndAnswerReleases(t *testing.T) {
 		t.Fatalf("Spawn() = %v, want no error", err)
 	}
 
-	ask, err := d.Ask(engagement.ID, engagement.Token, "May I force-push?")
+	ask, err := d.Ask(context.Background(), engagement.ID, engagement.Token, "May I force-push?")
 	if err != nil {
 		t.Fatalf("Ask() = %v, want no error", err)
 	}
@@ -398,7 +418,7 @@ func TestDirectorsAreIsolatedFromEachOther(t *testing.T) {
 	if len(fleet) != 0 {
 		t.Errorf("the second director sees %d engagements, want 0", len(fleet))
 	}
-	if _, err := other.Report(engagement.ID, engagement.Token, "reading", ""); err == nil {
+	if _, err := other.Report(context.Background(), engagement.ID, engagement.Token, "reading", ""); err == nil {
 		t.Error("Report() across directors = nil error, want a rejection")
 	}
 }

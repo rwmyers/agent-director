@@ -83,6 +83,40 @@ func (a *Adapter) SkillLocations() (harness.SkillLocations, error) {
 	}, nil
 }
 
+// The environment Claude Code sets in a conversation's own process. EnvInside
+// is what says we are in one at all; EnvSession names which conversation, and
+// may be absent, which is reported as being inside regardless.
+const (
+	EnvInside  = "CLAUDECODE"
+	EnvSession = "CLAUDE_CODE_SESSION_ID"
+)
+
+// Hosts declares what Claude Code offers a director running as one of its
+// conversations.
+//
+// Background only. A Claude Code conversation can run a command in the
+// background and be handed control when it exits. It cannot be woken: Send here
+// is `claude --print --resume <ref>`, a fresh headless process against the
+// transcript, which produces a turn nobody is looking at rather than a turn in
+// the conversation the person has open. Declaring wake would have the director
+// hand back promising a watcher that does not exist.
+func (a *Adapter) Hosts() harness.Hosting {
+	return harness.Hosting{Background: true, Wake: false}
+}
+
+// Locate reports whether this process is running inside a Claude Code
+// conversation, and which one.
+//
+// The session id is a label here and nothing dials it, because this adapter
+// declares no wake — so an empty one costs nothing and is still reported as
+// being inside, rather than turning a correct answer into a wrong one.
+func (a *Adapter) Locate() (string, bool) {
+	if os.Getenv(EnvInside) != "1" {
+		return "", false
+	}
+	return os.Getenv(EnvSession), true
+}
+
 // Enforceable lists what this adapter can control. All six appear because
 // Claude Code's tool allowlist can reach every one of them; whether a given
 // combination is enforceable is Permits' business.

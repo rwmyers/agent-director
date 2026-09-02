@@ -113,6 +113,25 @@ func (a *Adapter) kind() string {
 	return a.Kind
 }
 
+// Hosts declares what herdr offers a director sitting in one of its panes.
+//
+// Both. A director in a pane is a shell process: it can background a command
+// and stay at its prompt. And a pane can be typed into — Send is agent.prompt
+// against a pane id, which lands in the conversation somebody is watching — so
+// something else can make this director take a turn.
+func (a *Adapter) Hosts() harness.Hosting {
+	return harness.Hosting{Background: true, Wake: true}
+}
+
+// Locate reports the pane this process occupies, which is the address anything
+// waking this director would prompt.
+//
+// It is InPane under the interface name, and deliberately nothing more: being
+// able to drive herdr says nothing about where the director itself is sitting,
+// because the adapter only needs a socket and a socket is reachable from
+// anywhere.
+func (a *Adapter) Locate() (string, bool) { return InPane() }
+
 // Enforceable lists what this adapter can control.
 //
 // herdr does not enforce anything itself — it launches an agent binary in a

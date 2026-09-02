@@ -215,10 +215,19 @@ func Attach(ctx context.Context, roots Roots, id string, createNew bool, name, w
 	return d, createNew, nil
 }
 
-// claim records that a conversation is here.
+// claim records that a conversation is here, and where it is sitting.
+//
+// The host is worked out fresh and replaces whatever was there rather than
+// being merged into it. What was recorded belonged to the previous
+// conversation: it may have been in a different harness, and its address rings
+// somebody else's screen. Re-detecting per attach is also what makes the last
+// attacher the one an engagement can wake — an earlier conversation falls back
+// to checking on its own turn, which is the behaviour with no host at all.
 func (d *Director) claim() error {
+	host := d.locateHost()
 	return d.mutate(func(state *State) error {
 		state.AttachedAt = d.now()
+		state.Host = host
 		return nil
 	})
 }

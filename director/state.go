@@ -106,7 +106,11 @@ type State struct {
 	CreatedAt  time.Time
 	// AttachedAt is when a conversation last claimed this director. It is how
 	// a second conversation can tell somebody is already driving this fleet.
-	AttachedAt  time.Time
+	AttachedAt time.Time
+	// Host is where the conversation driving this director is running. It is
+	// written by attach and re-detected every time, because it describes the
+	// conversation that is here now rather than the state of the fleet.
+	Host        Host
 	Engagements map[string]*Engagement
 	Asks        map[string]*Ask
 }
@@ -246,6 +250,23 @@ func LoadState(path string) (*State, error) {
 		Engagements: map[string]*Engagement{},
 		Asks:        map[string]*Ask{},
 	}
+	state.Host = Host{
+		Harness: file.Global.Get("host_harness"),
+		Ref:     file.Global.Get("host_ref"),
+		Hosting: harness.Hosting{
+			// Only the literal "true" is a claim. Anything else — absent,
+			// misspelt, a state file written by an older director — leaves the
+			// conservative answer in place rather than granting a capability
+			// nothing verified.
+			Background: file.Global.Get("host_background") == "true",
+			Wake:       file.Global.Get("host_wake") == "true",
+		},
+		Source:      HostSource(file.Global.Get("host_source")),
+		LastWokenAt: parseTime(file.Global.Get("host_last_woken_at")),
+	}
+	if state.Host.Source == "" {
+		state.Host.Source = HostUnknown
+	}
 
 	for _, section := range file.SectionsWithPrefix("engagement.") {
 		engagement := &Engagement{
@@ -300,6 +321,18 @@ func (s *State) Save() error {
 	file.Global.Set("created_at", formatTime(s.CreatedAt))
 	if !s.AttachedAt.IsZero() {
 		file.Global.Set("attached_at", formatTime(s.AttachedAt))
+	}
+	if s.Host.Known() {
+		file.Global.Set("host_harness", s.Host.Harness)
+		if s.Host.Ref != "" {
+			file.Global.Set("host_ref", s.Host.Ref)
+		}
+		file.Global.Set("host_background", formatBool(s.Host.Hosting.Background))
+		file.Global.Set("host_wake", formatBool(s.Host.Hosting.Wake))
+		file.Global.Set("host_source", string(s.Host.Source))
+		if !s.Host.LastWokenAt.IsZero() {
+			file.Global.Set("host_last_woken_at", formatTime(s.Host.LastWokenAt))
+		}
 	}
 
 	for _, id := range s.EngagementIDs() {

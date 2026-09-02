@@ -148,6 +148,7 @@ func formatTransition(transition director.Transition) string {
 func newWaitCmd() *cobra.Command {
 	var interval, timeout time.Duration
 	var until, engagements []string
+	var force bool
 
 	defaultUntil := make([]string, 0, len(director.DefaultWaitUntil))
 	for _, health := range director.DefaultWaitUntil {
@@ -173,12 +174,18 @@ asked again.
 A director should generally use "director status" on its own turn instead;
 blocking on this would mean doing nothing while it waits.
 
+It refuses outright where the director's own host cannot background a command
+and stay reachable, because blocking there is not slow, it is gone. "director
+attach" prints what was detected. --force overrides it for one command; "host"
+in director.conf settles it for good.
+
 Exit codes:
   0  an engagement matched; the transition is printed on stdout
   1  something went wrong
   2  --engagement named an engagement that does not exist
   3  a harness was unreachable
-  4  --timeout elapsed with no match`,
+  4  --timeout elapsed with no match
+  5  this director's host cannot background a wait; --force overrides`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			healths := make([]director.Health, 0, len(until))
@@ -199,6 +206,7 @@ Exit codes:
 				Engagements: engagements,
 				Interval:    interval,
 				Timeout:     timeout,
+				Force:       force,
 			})
 			if err != nil {
 				return err
@@ -214,6 +222,7 @@ Exit codes:
 	cmd.Flags().StringSliceVar(&engagements, "engagement", nil, "wait for these engagements only (default: any)")
 	cmd.Flags().DurationVar(&timeout, "timeout", 0, "give up after this long (default: wait forever)")
 	cmd.Flags().DurationVar(&interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
+	cmd.Flags().BoolVar(&force, "force", false, "wait even where the host does not declare it can background one")
 	return cmd
 }
 

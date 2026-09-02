@@ -349,7 +349,7 @@ about you, and silence is what makes it think you are stuck.`,
 			if err != nil {
 				return err
 			}
-			engagement, err := d.Report(id, token, progress, message)
+			engagement, err := d.Report(cmd.Context(), id, token, progress, message)
 			if err != nil {
 				return err
 			}
@@ -396,7 +396,7 @@ Silently picking an option instead is how the wrong thing gets done quietly.`,
 			if err != nil {
 				return err
 			}
-			ask, err := d.Ask(id, token, question)
+			ask, err := d.Ask(cmd.Context(), id, token, question)
 			if err != nil {
 				return err
 			}

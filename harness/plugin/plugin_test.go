@@ -92,3 +92,73 @@ func TestAdapterSkillLocations(t *testing.T) {
 		}
 	})
 }
+
+func TestAdapterHosting(t *testing.T) {
+	t.Run("a plugin declares both bits and where to find itself", func(t *testing.T) {
+		// The acceptance case: nothing in director names this harness, and it
+		// still declares that a director sitting in it can be backgrounded and
+		// woken, and how to tell that it is sitting in it.
+		adapter := adapterFor(t, "boxes", `echo '{"api_version":1,"name":"boxes","version":"0.1.0",
+			"enforces":[],
+			"hosting":{"background":true,"wake":true,
+			"detect_env":{"BOXES_INSIDE":"1"},"ref_env":"BOXES_BOX_ID"}}'`)
+
+		want := harness.Hosting{Background: true, Wake: true}
+		if got := adapter.Hosts(); got != want {
+			t.Errorf("Hosts() = %v, want %v", got, want)
+		}
+
+		t.Setenv("BOXES_INSIDE", "")
+		t.Setenv("BOXES_BOX_ID", "")
+		if ref, inside := adapter.Locate(); inside {
+			t.Errorf("Locate() outside the harness = %q, %v, want not inside", ref, inside)
+		}
+
+		t.Setenv("BOXES_INSIDE", "1")
+		t.Setenv("BOXES_BOX_ID", "box-7")
+		ref, inside := adapter.Locate()
+		if !inside || ref != "box-7" {
+			t.Errorf("Locate() = %q, %v, want \"box-7\", true", ref, inside)
+		}
+
+		// A variable set to something else is not this harness.
+		t.Setenv("BOXES_INSIDE", "0")
+		if ref, inside := adapter.Locate(); inside {
+			t.Errorf("Locate() with a mismatched value = %q, %v, want not inside", ref, inside)
+		}
+	})
+
+	t.Run("a plugin may declare one bit and no detection at all", func(t *testing.T) {
+		// Background without wake is a real combination, and a harness that
+		// cannot recognise its own conversations is still nameable in
+		// configuration — it just is not detected.
+		adapter := adapterFor(t, "quiet", `echo '{"api_version":1,"name":"quiet","version":"0.1.0",
+			"hosting":{"background":true}}'`)
+
+		if got := adapter.Hosts(); got != (harness.Hosting{Background: true}) {
+			t.Errorf("Hosts() = %v, want background only", got)
+		}
+		if ref, inside := adapter.Locate(); inside {
+			t.Errorf("Locate() with no detect_env = %q, %v, want not inside", ref, inside)
+		}
+	})
+
+	t.Run("a plugin that declares nothing offers nothing", func(t *testing.T) {
+		adapter := adapterFor(t, "silenthost", `echo '{"api_version":1,"name":"silenthost","version":"0.1.0"}'`)
+		if got := adapter.Hosts(); got != harness.UnknownHosting() {
+			t.Errorf("Hosts() = %v, want nothing", got)
+		}
+	})
+
+	t.Run("a plugin that cannot be described offers nothing rather than failing", func(t *testing.T) {
+		// Detection is ambient. A broken plugin must not be able to stop a
+		// director working out where it is sitting.
+		adapter := adapterFor(t, "brokenhost", `echo '{"api_version":99,"name":"brokenhost"}'`)
+		if got := adapter.Hosts(); got != harness.UnknownHosting() {
+			t.Errorf("Hosts() = %v, want nothing", got)
+		}
+		if _, inside := adapter.Locate(); inside {
+			t.Error("Locate() on a broken plugin reported inside")
+		}
+	})
+}

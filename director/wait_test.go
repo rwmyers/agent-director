@@ -18,6 +18,26 @@ type waitResult struct {
 	err        error
 }
 
+// canBackground gives a test director a host that permits a blocking wait,
+// which is what every case below is actually about. Without one Wait refuses
+// before it looks at anything else, which is its own test further down.
+func canBackground(t *testing.T, d *Director) *Director {
+	t.Helper()
+	d.State.Host = Host{
+		Harness: "panes",
+		Ref:     "w6:p1",
+		Hosting: harness.Hosting{Background: true},
+		Source:  HostDetected,
+	}
+	// Written rather than only held, because every state mutation re-reads the
+	// file — as it must, since an agent's report can land between two of this
+	// director's own commands.
+	if err := d.State.Save(); err != nil {
+		t.Fatalf("Save() = %v, want no error", err)
+	}
+	return d
+}
+
 func startWait(d *Director, opts WaitOptions) <-chan waitResult {
 	done := make(chan waitResult, 1)
 	go func() {
@@ -40,7 +60,7 @@ func TestWait(t *testing.T) {
 	t.Run("a matching health returns the transition and a health that was not asked for does not", func(t *testing.T) {
 		t.Parallel()
 		adapter := &fakeAdapter{name: "fake", observation: working()}
-		d := newTestDirector(t, adapter, now)
+		d := canBackground(t, newTestDirector(t, adapter, now))
 		if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"}); err != nil {
 			t.Fatalf("Spawn() = %v, want no error", err)
 		}
@@ -82,7 +102,7 @@ func TestWait(t *testing.T) {
 		adapter := &fakeAdapter{name: "fake", observation: harness.Observation{
 			Found: true, Lifecycle: harness.LifecycleBlocked, LastActivityAt: now,
 		}}
-		d := newTestDirector(t, adapter, now)
+		d := canBackground(t, newTestDirector(t, adapter, now))
 		if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"}); err != nil {
 			t.Fatalf("Spawn() = %v, want no error", err)
 		}
@@ -104,7 +124,7 @@ func TestWait(t *testing.T) {
 		adapter := &fakeAdapter{name: "fake", observation: harness.Observation{
 			Found: true, Lifecycle: harness.LifecycleBlocked, LastActivityAt: now,
 		}}
-		d := newTestDirector(t, adapter, now)
+		d := canBackground(t, newTestDirector(t, adapter, now))
 		if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "first"}); err != nil {
 			t.Fatalf("Spawn() = %v, want no error", err)
 		}
@@ -130,7 +150,7 @@ func TestWait(t *testing.T) {
 	t.Run("a timeout is distinguishable from a match", func(t *testing.T) {
 		t.Parallel()
 		adapter := &fakeAdapter{name: "fake", observation: working()}
-		d := newTestDirector(t, adapter, now)
+		d := canBackground(t, newTestDirector(t, adapter, now))
 		if _, err := d.Spawn(context.Background(), SpawnOptions{Task: "investigate", Brief: "look"}); err != nil {
 			t.Fatalf("Spawn() = %v, want no error", err)
 		}
@@ -146,7 +166,7 @@ func TestWait(t *testing.T) {
 	t.Run("an unknown health is refused rather than waited on forever", func(t *testing.T) {
 		t.Parallel()
 		adapter := &fakeAdapter{name: "fake", observation: working()}
-		d := newTestDirector(t, adapter, now)
+		d := canBackground(t, newTestDirector(t, adapter, now))
 
 		_, err := d.Wait(context.Background(), WaitOptions{Until: []Health{"blocekd"}})
 		if err == nil {
@@ -160,11 +180,61 @@ func TestWait(t *testing.T) {
 	t.Run("an unknown engagement is refused", func(t *testing.T) {
 		t.Parallel()
 		adapter := &fakeAdapter{name: "fake", observation: working()}
-		d := newTestDirector(t, adapter, now)
+		d := canBackground(t, newTestDirector(t, adapter, now))
 
 		_, err := d.Wait(context.Background(), WaitOptions{Engagements: []string{"eng_nope"}})
 		if !errors.Is(err, ErrNotFound) {
 			t.Errorf("Wait() = %v, want ErrNotFound — waiting on an id that does not exist looks identical to patience", err)
+		}
+	})
+}
+
+func TestWaitRefusesWhereItCannotBeBackgrounded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+	t.Run("a host that cannot background one is refused before anything blocks", func(t *testing.T) {
+		t.Parallel()
+		// Nothing here has a host, which is the default and the safe answer.
+		// The refusal must be immediate: the whole point is that blocking on
+		// this host is not slow, it is gone.
+		d := newTestDirector(t, &fakeAdapter{name: "fake"}, now)
+
+		_, err := d.Wait(context.Background(), WaitOptions{Timeout: time.Hour})
+		if !errors.Is(err, ErrHostCannotWait) {
+			t.Fatalf("Wait() = %v, want ErrHostCannotWait", err)
+		}
+		// A director reading this needs somewhere to go, and status is the one
+		// thing that works on every host.
+		if !strings.Contains(err.Error(), "director status") {
+			t.Errorf("Wait() = %v, want it to point at director status", err)
+		}
+	})
+
+	t.Run("a host that declares only wake still cannot be blocked on", func(t *testing.T) {
+		t.Parallel()
+		// The two bits are independent: being reachable says nothing about
+		// whether this conversation can put a command in the background.
+		d := newTestDirector(t, &fakeAdapter{name: "fake"}, now)
+		d.State.Host = Host{Harness: "panes", Hosting: harness.Hosting{Wake: true}, Source: HostDetected}
+
+		if _, err := d.Wait(context.Background(), WaitOptions{}); !errors.Is(err, ErrHostCannotWait) {
+			t.Fatalf("Wait() = %v, want ErrHostCannotWait", err)
+		}
+	})
+
+	t.Run("--force overrides the refusal", func(t *testing.T) {
+		t.Parallel()
+		// Detection is ambient and can be wrong. Somebody who knows better must
+		// not be stuck behind an adapter's declaration.
+		adapter := &fakeAdapter{name: "fake"}
+		d := newTestDirector(t, adapter, now)
+
+		_, err := d.Wait(context.Background(), WaitOptions{
+			Force: true, Interval: 5 * time.Millisecond, Timeout: 30 * time.Millisecond,
+		})
+		if !errors.Is(err, ErrWaitTimeout) {
+			t.Fatalf("Wait(--force) = %v, want it to have waited and timed out", err)
 		}
 	})
 }
