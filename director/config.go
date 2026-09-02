@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/rwmyers/agent-director/harness"
 	"github.com/rwmyers/agent-director/internal/conf"
 )
 
@@ -147,7 +148,24 @@ type Config struct {
 	// the environment rather than from something somebody wrote down. Ambient
 	// behaviour nobody can turn off is behaviour nobody can debug.
 	HerdrAutodetect bool
-	Harnesses       map[string]map[string]string
+	// Host names the harness this director is itself running in, overriding
+	// detection.
+	//
+	// A global key beside `harness` rather than a section of its own. It is one
+	// fact about this director, and a [director] section would add a new shape
+	// to the config format to hold it; filing it under [harness.<name>] would
+	// put a statement about this director in a section documented as the
+	// adapter's, where it would read as a claim about the harness.
+	Host      string
+	Harnesses map[string]map[string]string
+	// HostLimits is the per-harness `hosts` key: what a person says an adapter
+	// offers as a host, here, on this machine.
+	//
+	// It may only narrow what the adapter itself declares. The adapter is the
+	// only thing that knows whether its harness can do this at all, so a config
+	// key able to grant a capability the adapter denies would be a promise
+	// nothing can keep — the same asymmetry Adapter.Permits already has.
+	HostLimits map[string]harness.Hosting
 }
 
 // HarnessConfig returns an adapter's configuration section.
@@ -162,8 +180,19 @@ func (c *Config) HarnessConfig(name string) map[string]string {
 // a root with workflows and no core config is perfectly usable, and demanding
 // an empty file would be ceremony.
 func LoadConfig(root string) (*Config, error) {
+	return loadConfig(root, harness.Lookup)
+}
+
+// loadConfig is LoadConfig with the registry injected, so a test can state what
+// an adapter declares without registering one globally.
+func loadConfig(root string, lookup func(string) (harness.Adapter, error)) (*Config, error) {
 	path := filepath.Join(root, "director.conf")
-	config := &Config{Source: path, HerdrAutodetect: true, Harnesses: map[string]map[string]string{}}
+	config := &Config{
+		Source:          path,
+		HerdrAutodetect: true,
+		Harnesses:       map[string]map[string]string{},
+		HostLimits:      map[string]harness.Hosting{},
+	}
 
 	file, err := conf.ParseFile(path)
 	if err != nil {
@@ -175,6 +204,7 @@ func LoadConfig(root string) (*Config, error) {
 	}
 
 	config.Harness = file.Global.Get("harness")
+	config.Host = file.Global.Get("host")
 	// Absent means on. Only the literal "false" turns it off, so a typo leaves
 	// the default in place rather than quietly disabling a feature nobody then
 	// notices is gone.
@@ -186,8 +216,49 @@ func LoadConfig(root string) (*Config, error) {
 			values[entry.Key] = entry.Value
 		}
 		config.Harnesses[name] = values
+		if err := readHostLimit(config, name, values["hosts"], lookup); err != nil {
+			return nil, err
+		}
 	}
 	return config, nil
+}
+
+// readHostLimit parses one adapter's `hosts` key and refuses a widening.
+//
+// The widening check is skipped when the adapter is not registered in this
+// binary, because it cannot be done rather than because it does not matter: one
+// configuration is shared across machines, and a plugin installed on one of them
+// must not make director refuse to start on the others. What can be proved is
+// refused; what cannot be proved is left to be applied if the adapter ever turns
+// up, and an adapter that is present and declares less is named outright.
+func readHostLimit(config *Config, name, raw string, lookup func(string) (harness.Adapter, error)) error {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	limit, err := harness.ParseHosting(conf.List(raw))
+	if err != nil {
+		return fmt.Errorf("%s: [harness.%s] hosts: %w", config.Source, name, err)
+	}
+	if lookup != nil {
+		if adapter, lookupErr := lookup(name); lookupErr == nil {
+			if declared := harness.HostingOf(adapter); !declared.Covers(limit) {
+				return fmt.Errorf("%s: [harness.%s] hosts = %s asks for more than the %s adapter declares (%s). "+
+					"Configuration can take a hosting capability away and cannot add one: only the adapter knows whether its harness can do this at all",
+					config.Source, name, limit, name, declared)
+			}
+		}
+	}
+	config.HostLimits[name] = limit
+	return nil
+}
+
+// HostingFor is what an adapter offers as a host once configuration has had its
+// say: what it declares, narrowed by any `hosts` key naming it.
+func (c *Config) HostingFor(name string, declared harness.Hosting) harness.Hosting {
+	if limit, ok := c.HostLimits[name]; ok {
+		return declared.Narrow(limit)
+	}
+	return declared
 }
 
 // WorkflowsDir is where a root keeps workflow files.

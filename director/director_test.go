@@ -92,6 +92,10 @@ report_on   = progress-change, 5m
 	// director inside a herdr pane spawns into panes, and a test that inherited
 	// that would pass or fail according to whose terminal ran it.
 	d.InPane = func() (string, bool) { return "", false }
+	// Same reason: working out where the DIRECTOR is sitting walks the
+	// registry, and the suite must not detect the herdr pane or Claude Code
+	// conversation the test binary happens to have been started in.
+	d.Names = func() []string { return []string{adapter.name} }
 	return d
 }
 

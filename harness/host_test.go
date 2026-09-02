@@ -32,13 +32,13 @@ type hostingStub struct {
 	*stub
 }
 
-func (h hostingStub) Hosts() Hosting { return *h.stub.hosting }
+func (h hostingStub) Hosts() Hosting { return *h.hosting }
 
 type locatingStub struct {
 	hostingStub
 }
 
-func (l locatingStub) Locate() (string, bool) { return l.stub.ref, l.stub.inside }
+func (l locatingStub) Locate() (string, bool) { return l.ref, l.inside }
 
 // adapterFor wraps a stub in exactly the optional interfaces it declares, so a
 // test can say "this adapter has no Hosts method" and mean it.

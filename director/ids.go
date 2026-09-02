@@ -77,3 +77,14 @@ func parseTime(value string) time.Time {
 	}
 	return parsed
 }
+
+// formatBool renders a flag for a state file. The pair with the read side is
+// deliberately asymmetric: only "true" reads back as true, so a value nothing
+// wrote — a state file from an older director, a hand edit — leaves the
+// conservative answer in place.
+func formatBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}

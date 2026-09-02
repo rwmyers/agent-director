@@ -56,6 +56,11 @@ type Director struct {
 	// be tested against fakes without touching the global registry.
 	Lookup func(name string) (harness.Adapter, error)
 
+	// Names lists the registered adapters. Injectable for the same reason
+	// Lookup is: working out where this director is sitting walks the registry,
+	// and a test must be able to state what exists without the global one.
+	Names func() []string
+
 	// InPane reports the herdr pane this director process is itself running in,
 	// when it is running in one. It is the one placement input that comes from
 	// the environment, and is injectable for the same reason Lookup is: a test
@@ -308,6 +313,7 @@ func Open(roots Roots, id string, clock Clock) (*Director, error) {
 		State:    state,
 		Clock:    clock,
 		Lookup:   harness.Lookup,
+		Names:    harness.Names,
 		InPane:   herdr.InPane,
 	}, nil
 }
@@ -971,11 +977,7 @@ func (d *Director) Note(id, text string) error {
 }
 
 func (d *Director) lookupFor(engagement *Engagement) (harness.Adapter, error) {
-	lookup := d.Lookup
-	if lookup == nil {
-		lookup = harness.Lookup
-	}
-	return lookup(engagement.Harness)
+	return d.lookup(engagement.Harness)
 }
 
 // authenticate checks that a token belongs to the engagement it claims.
