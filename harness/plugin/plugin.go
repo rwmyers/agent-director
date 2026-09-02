@@ -100,6 +100,51 @@ func (a *Adapter) SkillLocations() (harness.SkillLocations, error) {
 	}, nil
 }
 
+// Hosts reports what the plugin declares it offers a director running inside it.
+//
+// A plugin that declares no hosting block, or that cannot be described at all,
+// offers nothing. That is the conservative direction and it is the only safe
+// one here: a plugin wrongly credited with backgrounding freezes a director,
+// and one wrongly credited with wake has it hand back promising a watcher that
+// does not exist.
+func (a *Adapter) Hosts() harness.Hosting {
+	description, err := a.describe()
+	if err != nil || description.Hosting == nil {
+		return harness.UnknownHosting()
+	}
+	return harness.Hosting{
+		Background: description.Hosting.Background,
+		Wake:       description.Hosting.Wake,
+	}
+}
+
+// Locate reports whether this director is running inside the plugin's harness,
+// by matching the environment the plugin said its own conversations carry.
+//
+// Present unconditionally, like Read, because the optional-interface probe
+// happens before describe has run. The match is done here rather than by asking
+// the plugin, so the answer costs the one describe every other method already
+// pays for rather than a second process per attach — and a plugin that is
+// broken, missing or slow simply is not detected, which is what ambient
+// detection has to do.
+func (a *Adapter) Locate() (string, bool) {
+	description, err := a.describe()
+	if err != nil || description.Hosting == nil || len(description.Hosting.DetectEnv) == 0 {
+		return "", false
+	}
+	for key, want := range description.Hosting.DetectEnv {
+		got := os.Getenv(key)
+		if got == "" || (want != "" && got != want) {
+			return "", false
+		}
+	}
+	var ref string
+	if description.Hosting.RefEnv != "" {
+		ref = os.Getenv(description.Hosting.RefEnv)
+	}
+	return ref, true
+}
+
 // Enforceable reports what the plugin says it can control.
 func (a *Adapter) Enforceable() []harness.Capability {
 	description, err := a.describe()

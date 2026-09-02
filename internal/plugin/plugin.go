@@ -234,6 +234,43 @@ type Description struct {
 	// says the harness has no place for them, and `director install` passes
 	// over the plugin rather than offering a target it cannot write.
 	Skills *Skills `json:"skills,omitempty"`
+	// Hosting is what this harness offers a director running inside it.
+	// Omitting it declares nothing, which is what an adapter written before
+	// this existed means: it was never asked, so it has not answered.
+	Hosting *Hosting `json:"hosting,omitempty"`
+}
+
+// Hosting is the optional hosting block of a describe reply. It is how a plugin
+// declares both bits without any edit to director.
+//
+// Detection is a set of environment variables rather than a verb. Whether a
+// director is sitting inside a harness is asked once per attach, across every
+// registered adapter including the ones nobody is using, and the answer is
+// ambient — nobody asked for it. A verb would mean a second process per plugin
+// on a question most of them answer no to, and any plugin that has to be
+// started in order to say "not me" can make attaching slow or fail. A harness
+// that can host a director marks its own conversations in the environment
+// already, because that is how anything inside one finds out where it is.
+type Hosting struct {
+	// Background says a director here can background a blocking `director wait`
+	// and stay reachable.
+	Background bool `json:"background"`
+	// Wake says something can reach into this director's live conversation and
+	// make it take a turn — which for this plugin means its own send verb,
+	// addressed at the ref below.
+	Wake bool `json:"wake"`
+	// DetectEnv is the environment this harness sets in a conversation of its
+	// own. Every entry must match for the director to be judged inside: a value
+	// is compared exactly, and an empty value means the variable need only be
+	// set to something. No entries means the plugin cannot tell, and it is
+	// never detected — only named in configuration.
+	DetectEnv map[string]string `json:"detect_env,omitempty"`
+	// RefEnv names the variable holding this conversation's own ref, which is
+	// what a wake would be addressed to. Empty, or unset in the environment,
+	// yields an empty ref, which is still inside: the id is a label, and
+	// declining to notice the harness because the label is missing turns a
+	// correct answer into a wrong one.
+	RefEnv string `json:"ref_env,omitempty"`
 }
 
 // Skills is the optional skills block of a describe reply.

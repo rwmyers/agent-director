@@ -104,6 +104,50 @@ None of this requires the rest of the protocol. Being installable and being
 drivable are separate capabilities, and a harness director cannot spawn into can
 still say where its skills go.
 
+#### `hosting` — optional
+
+What your harness offers a director running **inside** it. Everything else here
+describes a harness director dispatches work *to*; this is the other direction,
+and it is a separate question. Declare it and director can sit in your harness
+with no change to director itself.
+
+```json
+{"api_version": 1, "name": "demo", "version": "0.1.0", "enforces": [],
+ "hosting": {"background": true, "wake": true,
+             "detect_env": {"DEMO_INSIDE": "1"}, "ref_env": "DEMO_SESSION_ID"}}
+```
+
+- `background` — a director here can background a blocking `director wait` and
+  still be reachable. Without it `director wait` refuses, and the director checks
+  on its own turn instead.
+- `wake` — something can reach into this director's **live** conversation and
+  make it take a turn. That is your `send` verb, addressed at the ref below. Say
+  `false` if your send starts a fresh headless process against a transcript: that
+  produces a turn nobody is looking at, and a director told it can be woken hands
+  back promising a watcher that does not exist.
+- `detect_env` — the environment your harness sets inside one of its own
+  conversations. Every entry must match: a value is compared exactly, and an
+  empty value means the variable need only be set to something. director checks
+  these itself, in process — it does not run you to ask — because location is
+  worked out on every attach across every registered harness, including the ones
+  nobody is using.
+- `ref_env` — the variable holding this conversation's own ref, which is what a
+  wake is addressed to. Unset yields an empty ref, which is still *inside*.
+
+Both bits default to `false`, which is what omitting the block means. That is
+the safe answer: a director wrongly told it can background freezes where nobody
+can reach it, and one wrongly told it can be woken abandons its fleet politely.
+Being wrong the conservative way only costs it a turn.
+
+Omit `detect_env` and your harness is never detected — it can still be named
+outright with `host = <name>` in `director.conf`. A person can also narrow what
+you declared, per harness, and may never widen it:
+
+```
+[harness.demo]
+hosts = background
+```
+
 ### `spawn`
 
 Start a conversation and **return as soon as it is addressable** — never when
