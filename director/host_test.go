@@ -252,3 +252,29 @@ func TestHostsConfigMayNarrowButNotWiden(t *testing.T) {
 		}
 	})
 }
+
+func TestNextTurn(t *testing.T) {
+	t.Parallel()
+	// The four combinations are four different instructions, which is the whole
+	// reason the pair is not an enum with a "can be waited on" mode.
+	for _, testCase := range []struct {
+		hosting harness.Hosting
+		want    string
+	}{
+		{harness.Hosting{Background: true, Wake: true}, "background `director wait`"},
+		{harness.Hosting{Background: true}, "background `director wait`"},
+		{harness.Hosting{Wake: true}, "do not background"},
+		{harness.Hosting{}, "neither"},
+	} {
+		host := Host{Harness: "panes", Hosting: testCase.hosting}
+		if got := host.NextTurn(); !strings.Contains(got, testCase.want) {
+			t.Errorf("NextTurn() for %v = %q, want it to contain %q", testCase.hosting, got, testCase.want)
+		}
+	}
+
+	// Wake alone must not read as an invitation to block.
+	wakeOnly := Host{Harness: "panes", Hosting: harness.Hosting{Wake: true}}
+	if strings.Contains(wakeOnly.NextTurn(), "background `director wait` to be woken") {
+		t.Errorf("NextTurn() for wake-only = %q, want it not to suggest backgrounding a wait", wakeOnly.NextTurn())
+	}
+}

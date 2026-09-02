@@ -97,6 +97,7 @@ Pass a director id to attach to a specific one, or --new to force a fresh one.`,
 					"root":     roots.Primary,
 					"created":  created,
 					"reason":   survey.Reason,
+					"host":     d.State.Host,
 					"survey":   survey,
 				})
 			}
@@ -109,6 +110,13 @@ Pass a director id to attach to a specific one, or --new to force a fresh one.`,
 			fmt.Printf("because: %s\n\n", survey.Reason)
 			fmt.Printf("Act as it by exporting this, or by passing --director on every command:\n\n")
 			fmt.Printf("    export %s=%s\n\n", director.EnvID, d.State.DirectorID)
+
+			// Said every attach, because it is detected every attach and can
+			// change between two sessions in the same project. It is also the
+			// only place a director is told how it gets its next turn, so the
+			// skill defers to this line rather than forking on a harness name.
+			fmt.Printf("host: %s\n", d.State.Host.Describe())
+			fmt.Printf("next turn: %s\n\n", d.State.Host.NextTurn())
 
 			if !created {
 				engagements, err := d.Status(cmd.Context())

@@ -117,3 +117,27 @@ func (d *Director) harnessNames() []string {
 	}
 	return harness.Names()
 }
+
+// NextTurn is what this host means for how the director gets its next turn.
+//
+// It is a sentence the director acts on rather than a pair of booleans it has
+// to interpret, and it is composed here rather than in a front end for the
+// usual reason: a TUI would need exactly the same words, and the shipped skill
+// is told to read this line instead of guessing at its harness.
+//
+// The last branch is the one that matters most. A director that can neither
+// block nor be reached has to say so when it hands back, because otherwise it
+// implies somebody is watching the fleet and nobody is.
+func (h Host) NextTurn() string {
+	switch {
+	case h.Hosting.Background && h.Hosting.Wake:
+		return "background `director wait` to be woken, and your engagements can also ring you when they report"
+	case h.Hosting.Background:
+		return "background `director wait` to be woken; nothing can reach into this conversation on its own"
+	case h.Hosting.Wake:
+		return "do not background `director wait` — it is refused here — but your engagements can ring you when they report"
+	default:
+		return "neither: `director wait` is refused here and nothing can reach you. " +
+			"Check `director status` on your own turn, and say plainly when you hand back that nothing will be looked at until the person prompts you"
+	}
+}

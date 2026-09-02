@@ -14,6 +14,17 @@ import (
 // happened and it was this".
 var ErrWaitTimeout = errors.New("timed out waiting for a matching engagement")
 
+// ErrHostCannotWait is returned when the director's own host cannot background
+// a blocking wait.
+//
+// It is a refusal rather than a warning because the failure it prevents is
+// total and silent. A director that blocks where it cannot background is gone:
+// it is not doing anything, it is not answering the person, and there is
+// nothing in the conversation to say why. Declining costs it one turn — it
+// checks `director status` itself, which is what it does today — and the whole
+// asymmetry between the two mistakes is why the bits default to false.
+var ErrHostCannotWait = errors.New("this director's host cannot background a wait")
+
 // DefaultWaitUntil is the set of healths worth waking a consumer for: exactly
 // those where Health.NeedsDirector is true. Waiting on "ok" or "quiet" would
 // return on ordinary progress, which is what watch is for.
@@ -29,6 +40,13 @@ type WaitOptions struct {
 	Interval time.Duration
 	// Timeout gives up after this long. Zero waits forever.
 	Timeout time.Duration
+	// Force waits anyway on a host that does not declare it can background one.
+	//
+	// It exists because detection is ambient and can be wrong, and somebody who
+	// knows better must not be stuck behind an adapter's declaration with no
+	// way past it. The lasting fix is `host` in director.conf; this is the way
+	// through for one command.
+	Force bool
 }
 
 // Wait blocks until an engagement reaches one of the healths asked for, and
@@ -44,6 +62,10 @@ type WaitOptions struct {
 // — an already-answered question is not going to transition into being asked
 // again.
 func (d *Director) Wait(ctx context.Context, opts WaitOptions) (Transition, error) {
+	if !opts.Force && !d.State.Host.Hosting.Background {
+		return Transition{}, fmt.Errorf("%w: %s.\n\n%s", ErrHostCannotWait, d.State.Host.Describe(), waitRefusalAdvice)
+	}
+
 	until, err := healthSet(opts.Until)
 	if err != nil {
 		return Transition{}, err
@@ -135,3 +157,19 @@ func ParseHealth(value string) (Health, error) {
 	}
 	return "", fmt.Errorf("unknown health %q: valid values are %s", value, strings.Join(names, ", "))
 }
+
+// waitRefusalAdvice is what to do instead. It names the one thing that works
+// everywhere — checking on your own turn — before the two ways to change the
+// verdict, because a director reading this needs a plan for right now more than
+// it needs a configuration key.
+const waitRefusalAdvice = `Blocking here would leave this conversation unreachable with nothing to say why.
+Check the fleet on your own turn instead:
+
+    director status --unhealthy
+
+and tell the person plainly that nothing will be looked at until they prompt you.
+If this host really can background a command, say so once in director.conf:
+
+    host = <harness>
+
+or pass --force to wait anyway this time.`

@@ -30,6 +30,10 @@ const (
 	// fleet can tell "nothing happened in time" — a normal outcome it should
 	// loop on — from "the wait itself failed".
 	exitTimeout = 4
+	// exitHostCannotWait is distinct from exitError so that a director, or a
+	// script, can tell "this host cannot do that" — which is a fact about where
+	// it is running and will not change by retrying — from a wait that broke.
+	exitHostCannotWait = 5
 )
 
 type globals struct {
@@ -56,6 +60,8 @@ func codeFor(err error) int {
 		return exitUnreachab
 	case errors.Is(err, director.ErrWaitTimeout):
 		return exitTimeout
+	case errors.Is(err, director.ErrHostCannotWait):
+		return exitHostCannotWait
 	default:
 		return exitError
 	}
