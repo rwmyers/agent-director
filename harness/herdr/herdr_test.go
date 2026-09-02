@@ -964,3 +964,25 @@ func TestSpawnDoesNotForwardAPaneIdentity(t *testing.T) {
 		t.Errorf("tab.create env[DIRECTOR_TOKEN] = %v, want the callback env untouched", env["DIRECTOR_TOKEN"])
 	}
 }
+
+func TestHostsAndLocate(t *testing.T) {
+	adapter := New()
+	want := harness.Hosting{Background: true, Wake: true}
+	if got := adapter.Hosts(); got != want {
+		t.Errorf("Hosts() = %v, want %v", got, want)
+	}
+
+	// Locate is InPane under the interface name, so it must agree with it.
+	for _, key := range []string{EnvInPane, EnvPane} {
+		t.Setenv(key, "")
+	}
+	if ref, inside := adapter.Locate(); inside {
+		t.Errorf("Locate() outside a pane = %q, %v, want not inside", ref, inside)
+	}
+	t.Setenv(EnvInPane, "1")
+	t.Setenv(EnvPane, "w6:p1")
+	ref, inside := adapter.Locate()
+	if !inside || ref != "w6:p1" {
+		t.Errorf("Locate() in a pane = %q, %v, want \"w6:p1\", true", ref, inside)
+	}
+}

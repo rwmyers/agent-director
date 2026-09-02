@@ -268,3 +268,33 @@ func TestSkillLocations(t *testing.T) {
 		}
 	})
 }
+
+func TestHostsAndLocate(t *testing.T) {
+	adapter := New()
+	// Background but not wake: Send resumes a headless process against the
+	// transcript, which is not the conversation somebody is watching.
+	want := harness.Hosting{Background: true, Wake: false}
+	if got := adapter.Hosts(); got != want {
+		t.Errorf("Hosts() = %v, want %v", got, want)
+	}
+
+	t.Setenv(EnvInside, "")
+	t.Setenv(EnvSession, "")
+	if ref, inside := adapter.Locate(); inside {
+		t.Errorf("Locate() outside Claude Code = %q, %v, want not inside", ref, inside)
+	}
+
+	t.Setenv(EnvInside, "1")
+	t.Setenv(EnvSession, "3f0c")
+	ref, inside := adapter.Locate()
+	if !inside || ref != "3f0c" {
+		t.Errorf("Locate() = %q, %v, want \"3f0c\", true", ref, inside)
+	}
+
+	// No session id is still inside: the id is a label, and nothing dials it
+	// here because this adapter declares no wake.
+	t.Setenv(EnvSession, "")
+	if ref, inside := adapter.Locate(); !inside || ref != "" {
+		t.Errorf("Locate() without a session id = %q, %v, want \"\", true", ref, inside)
+	}
+}
