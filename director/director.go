@@ -805,7 +805,14 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 // The token is checked against the named engagement, so an agent can only speak
 // for itself. Without that, one confused agent could move a sibling's progress
 // or answer for it, and nothing in the output would reveal that it had happened.
-func (d *Director) Report(engagementID, token, progress, message string) (*Engagement, error) {
+//
+// It then rings the director, if this director's host can be rung and the
+// report is news worth a turn. That is an optimisation over the record and
+// never the record: the report is already written, and a wake that does not
+// happen leaves exactly the behaviour there was before — the director reads it
+// on its next turn. So the wake's error is discarded here rather than returned,
+// because an agent whose report succeeded must not be told its report failed.
+func (d *Director) Report(ctx context.Context, engagementID, token, progress, message string) (*Engagement, error) {
 	var updated *Engagement
 	err := d.mutate(func(state *State) error {
 		engagement, err := authenticate(state, engagementID, token)
@@ -834,11 +841,19 @@ func (d *Director) Report(engagementID, token, progress, message string) (*Engag
 		updated = engagement
 		return nil
 	})
-	return updated, err
+	if err != nil {
+		return nil, err
+	}
+	_ = d.notify(ctx, engagementID)
+	return updated, nil
 }
 
 // Ask records a question from an agent and blocks it until somebody answers.
-func (d *Director) Ask(engagementID, token, question string) (*Ask, error) {
+//
+// It rings the director on the same terms Report does, and for the same reason
+// it does not matter if the ring is lost: the question is in the state file,
+// the engagement is unambiguously blocked, and status says so.
+func (d *Director) Ask(ctx context.Context, engagementID, token, question string) (*Ask, error) {
 	if strings.TrimSpace(question) == "" {
 		return nil, errors.New("a question is required")
 	}
@@ -861,7 +876,11 @@ func (d *Director) Ask(engagementID, token, question string) (*Ask, error) {
 		state.Asks[id] = created
 		return nil
 	})
-	return created, err
+	if err != nil {
+		return nil, err
+	}
+	_ = d.notify(ctx, engagementID)
+	return created, nil
 }
 
 // Answer resolves a question, unblocking the agent waiting on it.

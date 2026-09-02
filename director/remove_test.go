@@ -237,7 +237,7 @@ func TestRemove(t *testing.T) {
 	t.Run("its unanswered questions go with it", func(t *testing.T) {
 		t.Parallel()
 		d, _, engagement := withEngagement(t, harness.LifecycleDone)
-		ask, err := d.Ask(engagement.ID, d.State.Engagements[engagement.ID].Token, "which branch?")
+		ask, err := d.Ask(context.Background(), engagement.ID, d.State.Engagements[engagement.ID].Token, "which branch?")
 		if err != nil {
 			t.Fatalf("Ask() = %v, want no error", err)
 		}

@@ -20,6 +20,7 @@ type fakeAdapter struct {
 	name        string
 	permitErr   error
 	spawnErr    error
+	sendErr     error
 	spawns      []harness.SpawnRequest
 	sends       []harness.SendRequest
 	observation harness.Observation
@@ -40,7 +41,7 @@ func (f *fakeAdapter) Spawn(_ context.Context, req harness.SpawnRequest) (harnes
 
 func (f *fakeAdapter) Send(_ context.Context, req harness.SendRequest) error {
 	f.sends = append(f.sends, req)
-	return nil
+	return f.sendErr
 }
 
 func (f *fakeAdapter) Get(context.Context, string) (harness.Observation, error) {
@@ -215,7 +216,7 @@ func TestReport(t *testing.T) {
 	t.Run("an engagement's own token is accepted", func(t *testing.T) {
 		t.Parallel()
 		d, engagement := spawn(t)
-		if _, err := d.Report(engagement.ID, engagement.Token, "reading", "halfway"); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "reading", "halfway"); err != nil {
 			t.Fatalf("Report() = %v, want no error", err)
 		}
 		if got := d.State.Engagements[engagement.ID].Progress; got != "reading" {
@@ -228,7 +229,7 @@ func TestReport(t *testing.T) {
 		// Without this an agent could move a sibling's progress or answer for
 		// it, and nothing in the output would reveal that it had happened.
 		d, engagement := spawn(t)
-		_, err := d.Report(engagement.ID, "not-the-right-token", "reading", "")
+		_, err := d.Report(context.Background(), engagement.ID, "not-the-right-token", "reading", "")
 		if err == nil {
 			t.Fatal("Report() = nil error, want a rejection")
 		}
@@ -240,7 +241,7 @@ func TestReport(t *testing.T) {
 	t.Run("progress outside the task's vocabulary is refused, and the valid set is named", func(t *testing.T) {
 		t.Parallel()
 		d, engagement := spawn(t)
-		_, err := d.Report(engagement.ID, engagement.Token, "vibing", "")
+		_, err := d.Report(context.Background(), engagement.ID, engagement.Token, "vibing", "")
 		if err == nil {
 			t.Fatal("Report() = nil error, want a rejection")
 		}
@@ -261,7 +262,7 @@ func TestReport(t *testing.T) {
 		if d.State.Engagements[engagement.ID].NudgedAt.IsZero() {
 			t.Fatal("Nudge() did not record when it happened")
 		}
-		if _, err := d.Report(engagement.ID, engagement.Token, "reading", ""); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "reading", ""); err != nil {
 			t.Fatalf("Report() = %v, want no error", err)
 		}
 		if !d.State.Engagements[engagement.ID].NudgedAt.IsZero() {
@@ -283,7 +284,7 @@ func TestAskBlocksAndAnswerReleases(t *testing.T) {
 		t.Fatalf("Spawn() = %v, want no error", err)
 	}
 
-	ask, err := d.Ask(engagement.ID, engagement.Token, "May I force-push?")
+	ask, err := d.Ask(context.Background(), engagement.ID, engagement.Token, "May I force-push?")
 	if err != nil {
 		t.Fatalf("Ask() = %v, want no error", err)
 	}
@@ -402,7 +403,7 @@ func TestDirectorsAreIsolatedFromEachOther(t *testing.T) {
 	if len(fleet) != 0 {
 		t.Errorf("the second director sees %d engagements, want 0", len(fleet))
 	}
-	if _, err := other.Report(engagement.ID, engagement.Token, "reading", ""); err == nil {
+	if _, err := other.Report(context.Background(), engagement.ID, engagement.Token, "reading", ""); err == nil {
 		t.Error("Report() across directors = nil error, want a rejection")
 	}
 }
