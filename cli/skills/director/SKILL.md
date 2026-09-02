@@ -144,16 +144,17 @@ naming the directory to run it from. It is not a job you take on.
 
 ## The loop
 
-0. **Attach.** `director attach`. Everything else fails without it.
+0. **Attach.** `director attach`. Everything else fails without it. Read the
+   `next turn:` line it prints: it is where step 3 comes from.
 1. **Orient, once.** `director harnesses` and `director tasks`. Spawning into a
    harness that is not actually available is how you find out too late that its
    server is down.
 2. **Brief and dispatch.** One `director spawn` per independent piece of work.
    Dispatch several without waiting between them — that is the entire point.
-3. **Arrange your next turn.** Background `director wait` so an agent finishing
-   or getting stuck wakes you. See *Do not wait for a turn that may never
-   come* — without this, step 4 happens whenever the person next types, which
-   may be never.
+3. **Arrange your next turn**, however the `next turn:` line from `director
+   attach` said you can. See *Do not wait for a turn that may never come* —
+   without this, step 4 happens whenever the person next types, which may be
+   never.
 4. **Check, every turn.** `director status --unhealthy` is cheap and reads no
    transcripts. Run it before deciding anything.
 5. **Read only what changed.** `director read <id>` after status says something
@@ -233,19 +234,44 @@ come back.
 So "I'll check on it next turn" followed by handing control back is not a plan.
 It is abandoning the fleet in a polite voice.
 
-If your harness can run a command in the background and give you control when it
-exits, that is the fix. `director wait` blocks until an engagement needs you and
-then exits, which turns *an agent responded* into *the director is running
-again*:
+**`director attach` told you which fix is available to you.** It printed two
+lines:
+
+```
+host: herdr (detected), offering background, wake
+next turn: background `director wait` to be woken, and your engagements can also ring you when they report
+```
+
+Do what the `next turn:` line says. Do not guess from the name of the harness
+you think you are running in — the same skill is installed everywhere, the
+answer is worked out fresh on every attach, and it can differ between two
+sessions in the same project. If you have lost the line, `director attach`
+again and read it. There are three answers:
+
+**Background `director wait`.** It blocks until an engagement needs you and then
+exits, which turns *an agent responded* into *the director is running again*:
 
 ```sh
 director wait --director <id> --until blocked,complete,abandoned,stalled
 ```
 
 It prints the transition that woke it — which engagement, which health, and what
-the agent last said. Exit `0` means matched, `4` means `--timeout` elapsed,
-other non-zero means something went wrong. Background it right after
-dispatching; when it returns you are awake with the reason already in hand.
+the agent last said. Exit `0` means matched, `4` means `--timeout` elapsed, `5`
+means this host cannot background a wait at all, other non-zero means something
+went wrong. Background it right after dispatching; when it returns you are awake
+with the reason already in hand.
+
+**Your engagements will ring you.** Nothing to arm — when one blocks, finishes,
+or goes wrong, its own `director report` types a line into this conversation and
+you get a turn. Treat it as a bonus and not as a guarantee: it is best-effort,
+it is rate-limited, and it stops working if somebody else attaches to this
+director after you. The state file is the record either way, so `director
+status` is still what you act on.
+
+**Neither.** Say so when you hand back. Tell the person plainly that nothing
+will be checked until they prompt you, rather than implying someone is watching.
+`director wait` will refuse here with exit `5`, and forcing it past that is how
+you end up frozen and unreachable.
 
 Five things that will bite you otherwise:
 
@@ -262,9 +288,9 @@ Five things that will bite you otherwise:
 - **The config root is resolved from the working directory.** A backgrounded
   command may not start where you did; if it reports no such director for one
   you can plainly see, pass `--config <root>`. `director where` prints it.
-- **If your harness cannot wake you this way**, say so when you hand back. Tell
-  the person plainly that nothing will be checked until they prompt you, rather
-  than implying someone is watching.
+- **`director attach` is what says whether any of this applies.** Its `next
+  turn:` line is the only place the answer comes from. If it said neither, none
+  of the above is available to you and the person needs to be told.
 
 ## Writing a brief
 
@@ -308,8 +334,8 @@ somebody something shipped when it did not.
 
 **Do not leave a blocked agent waiting.** An agent that asked a question is
 stopped and burning wall-clock. Nobody else will notice. Answer it or escalate
-it the same turn you see it — and arrange to see it, by backgrounding
-`director wait` rather than hoping for a turn.
+it the same turn you see it — and arrange to see it, by whatever `director
+attach` said this host allows, rather than hoping for a turn.
 
 ## Going further
 

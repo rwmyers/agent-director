@@ -142,8 +142,10 @@ other than the person can wake you.
   boundaries you defaulted, anything the person said that did not fit in the
   brief. Your context gets compacted; the note does not. It replaces rather
   than appends, so re-write the whole list each time.
-- **Arm `director wait`** in the background so the engagement finishing or
-  blocking wakes you. The `director` skill's *Do not wait for a turn that
-  may never come* has the flags and the five ways it bites.
+- **Arrange your next turn** the way the `next turn:` line from `director
+  attach` said you can — usually backgrounding `director wait` so the engagement
+  finishing or blocking wakes you. The `director` skill's *Do not wait for a
+  turn that may never come* has the three answers, the flags, and the five ways
+  it bites.
 - **Tell the person what you spawned**, in their terms, with the id's first
   four characters and whatever you assumed on their behalf.
