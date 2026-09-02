@@ -135,7 +135,10 @@ func findProjectRoot(startDir string) (string, bool) {
 // Only a small set of keys is understood here. Everything under
 // [harness.<name>] is handed to that adapter verbatim and never inspected,
 // because validating it would mean knowing about every harness that will ever
-// exist.
+// exist — with one exception, `hosts`, which is not a setting for the adapter
+// at all. It is a statement about what that harness offers a director sitting
+// inside it, which is director's own question and is checked against what the
+// adapter declares.
 type Config struct {
 	Source  string
 	Harness string

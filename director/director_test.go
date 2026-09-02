@@ -13,6 +13,21 @@ import (
 	"github.com/rwmyers/agent-director/harness/herdr"
 )
 
+// TestMain clears the environment a director hands its agents.
+//
+// The suite is otherwise not hermetic: DIRECTOR_ID selects which director Open
+// acts as, so running the tests from inside an engagement — which is exactly
+// how this repository gets worked on — makes a dozen of them fail on a
+// director that belongs to somebody else's fleet. The root and the callback
+// credentials go with it, since a test must never be able to report into a
+// live director.
+func TestMain(m *testing.M) {
+	for _, key := range []string{EnvRoot, EnvID, EnvEngagement, EnvToken, EnvTask, EnvProgress} {
+		_ = os.Unsetenv(key)
+	}
+	os.Exit(m.Run())
+}
+
 // fakeAdapter records what the core asked it to do, so a test can assert that
 // the core asked for nothing more — a spawn that quietly proceeded past a
 // refused permission check would otherwise pass every other assertion.
