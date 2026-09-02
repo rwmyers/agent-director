@@ -24,9 +24,15 @@ and is a person's decision, not yours. If you find yourself reaching for
 `--force` to get past a refusal, you are about to orphan something — stop and
 say so instead.
 
-A `stalled`, `abandoned` or `complete` engagement is not live and removes
-without either flag. That is the ordinary case: a spawn that failed and left a
-row with no process behind it, or finished work whose row is now noise.
+What it refuses on is lifecycle — whether a process is attached — and not
+health, and it observes that fresh rather than trusting the stored row. Only
+`abandoned` and `complete` are certain to remove without either flag; both mean
+the harness saw the process end. `stalled` does not. Stalled says a report is
+overdue and the harness has seen no activity, which is also what an idle,
+reachable agent looks like, so a stalled engagement is often still live and
+`remove` refuses it with the same two ways out. The case that removes cleanly is
+the ordinary one: a spawn that failed and left a row with no process behind it,
+or finished work whose row is now noise.
 
 ## Resolve to exactly one, before you run anything
 
@@ -46,21 +52,26 @@ one engagement, and use its full `id` for the `stop`, `read` or `note` you run
 around the removal. A fragment passed to `director read` is simply not found,
 which reads like a missing engagement rather than a mistyped one.
 
-## Confirm before removing, because nothing undoes it
+## Nothing undoes it, so read before you remove
 
 There is no restore. The row is gone from the state file when the command
 returns, and with it the note you attached, the read cursor, the token, and any
-question the engagement had raised.
+question the engagement had raised. `director read` needs the row, so anything
+that still matters — the transcript above all — has to be read *before* the
+removal. Afterwards there is nothing left to read it through.
 
-Show what will go and get agreement first — id, title, health, progress:
+Asking permission is not what makes that safe. When the fragment resolves to
+exactly one engagement, remove it and say which row went, in the same message as
+the result — id, title, health, progress:
 
-    eng_41bfe6a01111ac1b  spawn onto herdr  stalled (no progress)
+    removed eng_41bfe6a01111ac1b  spawn onto herdr  stalled (no progress)
 
-One line per engagement, health first, the way `director status` composes it.
-Somebody who is shown only "removing eng_41bf" has been given nothing to check
-you against. If they asked for a removal in the same breath — "clear that dead
-spawn" — you still show the row you matched, because the thing being confirmed
-is *which* engagement, not whether they meant it.
+One line, health first, the way `director status` composes it. Somebody told
+only "removed eng_41bf" has been given nothing to check you against. They still
+get to check you; they are just not made to answer a question first when they
+have already asked for the removal. Ambiguity is the gate here, not agreement —
+a fragment matching more than one engagement goes back to them, one match does
+not.
 
 Remove one at a time. There is no bulk form, and a loop over a fragment list is
 how a fleet gets cleared by somebody who meant to clear one row.
