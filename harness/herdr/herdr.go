@@ -28,6 +28,12 @@ type Adapter struct {
 	Kind string
 	// Now is the clock, for tests.
 	Now func() time.Time
+	// InPane overrides how this adapter works out which pane it is running in,
+	// for tests. It is injected rather than read from the environment directly
+	// because self-location now decides where a spawn lands: a suite run inside
+	// a real herdr session would otherwise place its fixtures in somebody's
+	// window.
+	InPane func() (string, bool)
 
 	client *client
 	// sleep is how the readiness waits pass time, for tests.
@@ -130,7 +136,18 @@ func (a *Adapter) Hosts() harness.Hosting {
 // able to drive herdr says nothing about where the director itself is sitting,
 // because the adapter only needs a socket and a socket is reachable from
 // anywhere.
-func (a *Adapter) Locate() (string, bool) { return InPane() }
+//
+// It is also the one place that question is asked. `director remove` consults
+// it before closing a slot, and Spawn anchors placement to the window it names
+// — two ways of asking would eventually disagree, and the disagreement would
+// show up as an engagement in the wrong window or a removal closing the
+// director's own pane.
+func (a *Adapter) Locate() (string, bool) {
+	if a.InPane != nil {
+		return a.InPane()
+	}
+	return InPane()
+}
 
 // Displays says that herdr is showing somebody else's conversation.
 //
@@ -202,6 +219,9 @@ type tabInfo struct {
 type paneInfo struct {
 	PaneID string `json:"pane_id"`
 	TabID  string `json:"tab_id"`
+	// WorkspaceID is the window the pane is in. It is what anchors a spawn to
+	// the director's own space rather than to whatever herdr is focused on.
+	WorkspaceID string `json:"workspace_id"`
 }
 
 // agentInfo is herdr's view of one agent, per its published schema.
@@ -240,12 +260,20 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 		label = req.Title
 	}
 
+	// Which window, decided before anything is created. See anchor: herdr would
+	// otherwise put the tab wherever the person is looking at that instant.
+	workspace, err := a.anchor()
+	if err != nil {
+		return harness.SpawnResult{}, err
+	}
+
 	var tab tabCreateResult
-	err := a.rpc().call("tab.create", map[string]any{
-		"cwd":   req.Dir,
-		"env":   withoutPaneEnv(req.Env),
-		"label": label,
-		"focus": false,
+	err = a.rpc().call("tab.create", map[string]any{
+		"cwd":          req.Dir,
+		"env":          withoutPaneEnv(req.Env),
+		"label":        label,
+		"focus":        false,
+		"workspace_id": workspace,
 	}, &tab)
 	if err != nil {
 		return harness.SpawnResult{}, err
@@ -288,6 +316,11 @@ func (a *Adapter) Spawn(_ context.Context, req harness.SpawnRequest) (harness.Sp
 			"pane_id": paneID,
 			"tab_id":  tabID,
 			"kind":    a.kind(),
+			// The window the anchoring chose. Recorded rather than derived from
+			// the pane id, because a pane id is herdr's to shape and reading a
+			// window out of it would be a guess that survives right up until
+			// herdr changes the format.
+			"workspace_id": workspace,
 		},
 	}, nil
 }
