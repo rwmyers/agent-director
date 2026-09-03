@@ -206,22 +206,10 @@ func resolveHosts(names []string) ([]host, error) {
 		return chosen, nil
 	}
 
-	var options []huh.Option[string]
-	for _, candidate := range available {
-		label := candidate.locations.Description
-		if candidate.locations.Present {
-			label += "  (detected)"
-		}
-		option := huh.NewOption(label, candidate.name)
-		// Pre-select what is actually here, so the common case is one keypress
-		// and the uncommon one is still visible.
-		options = append(options, option.Selected(candidate.locations.Present))
-	}
-
 	picked, err := newPrompter().selectMany(
 		"Which harness should be able to direct?",
 		"Skills are how an agent learns to act as a director. Pick every harness you direct from.",
-		options)
+		hostOptions(available))
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +221,27 @@ func resolveHosts(names []string) ([]host, error) {
 		}
 	}
 	return chosen, nil
+}
+
+// hostOptions renders every install target as a pickable option.
+//
+// Every target and nothing else: the list offered must be the list --host
+// accepts, or somebody who cannot find their harness in the picker concludes
+// director cannot install for it, when naming it on the command line would have
+// worked all along.
+func hostOptions(available []host) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(available))
+	for _, candidate := range available {
+		label := candidate.locations.Description
+		if candidate.locations.Present {
+			label += "  (detected)"
+		}
+		option := huh.NewOption(label, candidate.name)
+		// Pre-select what is actually here, so the common case is one keypress
+		// and the uncommon one is still visible.
+		options = append(options, option.Selected(candidate.locations.Present))
+	}
+	return options
 }
 
 func targetDir(h host, scope Scope, projectRoot string) (string, error) {

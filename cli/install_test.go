@@ -150,3 +150,37 @@ func TestTargetDir(t *testing.T) {
 		}
 	})
 }
+
+// TestPickerOffersEveryAcceptedHost pins the picker to the accepted set.
+//
+// These are two code paths onto one list, and when they disagree the disagreement
+// is invisible: --host works, the picker does not offer it, and the person
+// concludes director cannot install for a harness it installs for perfectly
+// well. Nothing is asserted about the order beyond its being the same, because
+// the order is installTargets'.
+func TestPickerOffersEveryAcceptedHost(t *testing.T) {
+	// No t.Parallel: the registry is process-global.
+	harness.RegisterSkillInstaller("picker-declares", fakeInstaller{locations: harness.SkillLocations{
+		Description: "Picker Declares", GlobalDir: "/picker/global",
+	}})
+	harness.RegisterSkillInstaller("picker-declines", fakeInstaller{err: harness.ErrNoSkillLocations})
+
+	available := installTargets()
+	options := hostOptions(available)
+	if len(options) != len(available) {
+		t.Fatalf("hostOptions() offered %d of %d targets", len(options), len(available))
+	}
+	for i, candidate := range available {
+		if options[i].Value != candidate.name {
+			t.Errorf("option %d = %q, want the accepted host %q", i, options[i].Value, candidate.name)
+		}
+		// Every target must be reachable by name from the picker as well as
+		// from --host, which is what makes the two sets the same set.
+		if _, ok := lookupHost(available, options[i].Value); !ok {
+			t.Errorf("picker offers %q, which --host would refuse", options[i].Value)
+		}
+	}
+	if _, ok := lookupHost(available, "picker-declines"); ok {
+		t.Error("a harness that declined a skills location is an accepted host")
+	}
+}

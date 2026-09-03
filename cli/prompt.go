@@ -99,15 +99,29 @@ func (p prompter) selectOne(title, description string, options []huh.Option[stri
 	return chosen, nil
 }
 
-// selectMany asks a multiple-choice question.
-func (p prompter) selectMany(title, description string, options []huh.Option[string]) ([]string, error) {
-	var chosen []string
-	field := huh.NewMultiSelect[string]().
+// multiSelectField builds the multiple-choice field, with every option on
+// screen.
+//
+// The height is deliberately left unset. huh's Height is the height of the
+// whole field — title and description included — and it subtracts those before
+// sizing the list, so a height computed from the option count silently loses
+// rows off the bottom: a two-option question whose description wraps to two
+// lines has one line left for the list, and the second option is below the fold
+// with nothing on screen to say the list scrolls. Unset, huh sizes the list to
+// the options, and the form still shrinks it to fit a terminal too short to
+// hold them — which is a real constraint, unlike the arithmetic.
+func multiSelectField(title, description string, options []huh.Option[string], chosen *[]string) *huh.MultiSelect[string] {
+	return huh.NewMultiSelect[string]().
 		Title(title).
 		Description(description).
 		Options(options...).
-		Height(min(len(options)+2, 12)).
-		Value(&chosen)
+		Value(chosen)
+}
+
+// selectMany asks a multiple-choice question.
+func (p prompter) selectMany(title, description string, options []huh.Option[string]) ([]string, error) {
+	var chosen []string
+	field := multiSelectField(title, description, options, &chosen)
 
 	if err := p.run(field); err != nil {
 		if errors.Is(err, huh.ErrUserAborted) {
