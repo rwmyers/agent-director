@@ -245,10 +245,10 @@ else, so the public contract cannot rot without a compile error.
   hundred lines of Python, written against nothing but that document.
 
 Shipped adapters: **claude-code** (spawn, resume, transcript reads) and
-**herdr** (agents in panes; screen-snapshot reads). herdr placement is anchored
-to the director rather than to the cursor: a director in a pane puts its
-engagements in its own window, one without a pane uses a window labelled
-`director`, and neither takes the focus. See `anchor` in `harness/herdr/space.go`.
+**herdr** (agents in panes; screen-snapshot reads). On herdr, engagements are
+placed in the director's own window, or — for a director with no pane of its own
+— in a window labelled `director` that appears the first time it spawns. See
+`anchor` in `harness/herdr/space.go`.
 
 ## Further reading
 

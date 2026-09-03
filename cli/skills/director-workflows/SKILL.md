@@ -66,23 +66,6 @@ prefer a headless one for work nobody will be watching.
 harnesses afterwards, so if you are unsure which the person wants, ask before
 spawning rather than after.
 
-### Which herdr window an engagement lands in
-
-Never the one the person is looking at. herdr would put a new tab in whatever
-window is focused, which means a fleet spawned while somebody was moving around
-their session ends up scattered across it.
-
-- A director **running in a herdr pane** places every engagement in its own
-  window, whatever herdr is focused on at the time. Two spawns an hour apart
-  land in the same place.
-- A director **with no pane of its own** — headless, or hosted by claude-code —
-  places into a window labelled `director`, which is created if it is not
-  already there. That is where to look for an unattended fleet.
-- Spawning never moves the person. The window is never focused and the tab is
-  never raised.
-- If a director's own pane has been closed out from under it, the spawn is
-  refused and says so. It does not quietly place the agent somewhere else.
-
 ## Naming
 
 `--title` is what *you* see in `director status`. `--name` is what the *harness*
