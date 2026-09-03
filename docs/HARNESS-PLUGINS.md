@@ -97,8 +97,10 @@ Omit the whole block if your harness has no place for skills. director then
 passes over you silently rather than offering a target it cannot write, which is
 an ordinary answer — the built-in herdr adapter gives it, because herdr launches
 somebody else's agent in a pane and that agent loads skills from its own harness.
-Declaring only one of the two directories is fine too; the other scope is simply
-not offered.
+Naming you to `director install --host` still gets a straight answer: it says you
+are a harness director can drive rather than one skills are installed into, and
+points at the harnesses that are. Declaring only one of the two directories is
+fine too; the other scope is simply not offered.
 
 None of this requires the rest of the protocol. Being installable and being
 drivable are separate capabilities, and a harness director cannot spawn into can

@@ -994,6 +994,23 @@ func TestHostsAndLocate(t *testing.T) {
 	}
 }
 
+// TestHerdrIsNotAnInstallTarget pins the other half of the same fact.
+//
+// herdr reads no skills. It opens a pane and launches somebody else's agent in
+// it, and that agent loads skills from its own harness — so installing for
+// claude-code is what puts them in front of a claude running under herdr. A
+// herdr entry in `director install` would write them where nothing reads them,
+// and whoever picked it would have no way to tell that from its having worked.
+func TestHerdrIsNotAnInstallTarget(t *testing.T) {
+	t.Parallel()
+	installer, ok := any(New()).(harness.SkillInstaller)
+	if !ok {
+		return
+	}
+	locations, err := installer.SkillLocations()
+	t.Fatalf("herdr declares a skills location %+v (err %v), want none: it displays an agent rather than reading skills", locations, err)
+}
+
 func TestDisposeClosesThePane(t *testing.T) {
 	t.Parallel()
 	server := newFakeServer(t, map[string]any{})

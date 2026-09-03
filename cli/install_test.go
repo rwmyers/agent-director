@@ -34,6 +34,15 @@ type fakeAdapter struct {
 
 func (f fakeAdapter) Name() string { return f.name }
 
+// fakeDisplay is a drivable harness that shows somebody else's agent — herdr's
+// shape. It declares no skills location, because the agent it displays reads
+// skills from its own harness.
+type fakeDisplay struct {
+	fakeAdapter
+}
+
+func (fakeDisplay) Displays() bool { return true }
+
 func TestInstallTargets(t *testing.T) {
 	// No t.Parallel: the registry is process-global. Everything is registered
 	// up front and enumerated once, so the subtests only read.
@@ -183,4 +192,61 @@ func TestPickerOffersEveryAcceptedHost(t *testing.T) {
 	if _, ok := lookupHost(available, "picker-declines"); ok {
 		t.Error("a harness that declined a skills location is an accepted host")
 	}
+}
+
+// TestNotATarget covers the refusal, which is the whole answer for a harness
+// that has no skills of its own to install.
+//
+// Getting it wrong is not cosmetic: "unknown harness" about a harness director
+// drives sends the reader looking for a broken registry, which is exactly what
+// happened with herdr.
+func TestNotATarget(t *testing.T) {
+	// No t.Parallel: the registry is process-global.
+	harness.Register(fakeDisplay{fakeAdapter{name: "fake-pane"}})
+	harness.Register(fakeAdapter{name: "fake-agent-mute"})
+	harness.RegisterSkillInstaller("fake-target", fakeInstaller{locations: harness.SkillLocations{
+		Description: "Fake Target", GlobalDir: "/fake/target",
+	}})
+
+	available := installTargets()
+
+	t.Run("a display is told the skills belong to the agent it shows", func(t *testing.T) {
+		err := notATarget("fake-pane", available)
+		if err == nil {
+			t.Fatal("notATarget() = nil, want a refusal")
+		}
+		message := err.Error()
+		if strings.Contains(message, "unknown") {
+			t.Errorf("refusal = %q, want it not to claim ignorance of a harness director drives", message)
+		}
+		for _, want := range []string{"fake-pane", "displays another harness", "fake-target"} {
+			if !strings.Contains(message, want) {
+				t.Errorf("refusal = %q, want it to mention %q", message, want)
+			}
+		}
+	})
+
+	t.Run("a drivable harness with no skills location is named as one", func(t *testing.T) {
+		err := notATarget("fake-agent-mute", available)
+		if err == nil {
+			t.Fatal("notATarget() = nil, want a refusal")
+		}
+		message := err.Error()
+		if strings.Contains(message, "unknown") {
+			t.Errorf("refusal = %q, want it not to claim ignorance of a harness director drives", message)
+		}
+		if !strings.Contains(message, "director can drive") {
+			t.Errorf("refusal = %q, want it to say which set the harness is in", message)
+		}
+	})
+
+	t.Run("a name in neither set is the only unknown one", func(t *testing.T) {
+		err := notATarget("fake-nobody", available)
+		if err == nil {
+			t.Fatal("notATarget() = nil, want a refusal")
+		}
+		if !strings.Contains(err.Error(), "unknown harness") {
+			t.Errorf("refusal = %q, want it to say the name is unknown", err)
+		}
+	})
 }
