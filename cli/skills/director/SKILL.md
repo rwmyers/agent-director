@@ -207,9 +207,13 @@ process died reads as "still going"; `abandoned (editing)` is the truth, and is
 the entire reason this column is composed rather than picked. **Never put
 lifecycle in this cell** — `done` means only that no process is attached, and
 anyone reading `done` under a heading that says "status" will hear "finished".
-When a row is `blocked`, put the question and the `director answer` command
-under the table, not in the cell — and see *Questions are listed, not printed*
-below for where the question text comes from now.
+When a row is `blocked`, put the question under the table rather than in the
+cell, phrased so the person can answer it in prose — they reply to you, and you
+run `director answer`. Handing them the command instead asks them to do your
+job, in a syntax they did not sign up for, against an identifier only you can
+see; the usual result is that nobody answers and the agent stays stopped. See
+*Questions are listed, not printed* below for where the question text comes
+from now.
 
 **Materials** is what the person could go and look at: a branch, a PR, a path, a
 file the agent named. **The engagement reports this itself.** It runs `director
