@@ -102,6 +102,31 @@ func (d *Director) locateHost() Host {
 	}
 }
 
+// currentHost is where this director is sitting, decided now rather than when
+// the conversation attached.
+//
+// State.Host is a record of one moment — the attach — and anything that
+// branches on it is deciding from that moment's evidence. That is wrong for
+// capabilities, because the reason somebody writes `host` into director.conf is
+// that they disagree with what was detected, and a key that only takes effect
+// on the next attach is a remedy the refusal advertises and the code declines
+// to honour. Asking again costs an environment read: locateHost is required to
+// be cheap and not to fail.
+//
+// The recorded host is the fallback rather than the answer. Detection is
+// ambient and can come up empty where the attach did not, and a fresh look that
+// took a capability away from a conversation that already had it would be a
+// regression dressed as a correction.
+func (d *Director) currentHost() Host {
+	if host := d.locateHost(); host.Known() {
+		return host
+	}
+	if d.State != nil && d.State.Host.Known() {
+		return d.State.Host
+	}
+	return Host{Source: HostUnknown}
+}
+
 // lookup resolves an adapter through the injected registry.
 func (d *Director) lookup(name string) (harness.Adapter, error) {
 	if d.Lookup != nil {

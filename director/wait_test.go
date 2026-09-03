@@ -223,6 +223,58 @@ func TestWaitRefusesWhereItCannotBeBackgrounded(t *testing.T) {
 		}
 	})
 
+	t.Run("host in director.conf takes effect without re-attaching", func(t *testing.T) {
+		t.Parallel()
+		// The advice a refusal prints says to write `host` into director.conf.
+		// A director acts on that key in the conversation that just read the
+		// refusal, so it has to be read where the decision is made rather than
+		// where the conversation attached — otherwise the remedy silently does
+		// nothing and the same refusal comes back.
+		d := newTestDirector(t, &fakeAdapter{name: "fake"}, now)
+		withHosts(d, &hostAdapter{
+			fakeAdapter: fakeAdapter{name: "sessions"},
+			hosting:     harness.Hosting{Background: true},
+		})
+		// Attached before the key existed: nothing recognised its own
+		// environment, so nothing was recorded.
+		if err := d.claim(); err != nil {
+			t.Fatalf("claim() = %v, want no error", err)
+		}
+		if _, err := d.Wait(context.Background(), WaitOptions{}); !errors.Is(err, ErrHostCannotWait) {
+			t.Fatalf("Wait() before the key = %v, want ErrHostCannotWait", err)
+		}
+
+		// The key, as somebody has just written it. No second attach.
+		d.Config.Host = "sessions"
+
+		_, err := d.Wait(context.Background(), WaitOptions{
+			Interval: 5 * time.Millisecond, Timeout: 30 * time.Millisecond,
+		})
+		if !errors.Is(err, ErrWaitTimeout) {
+			t.Fatalf("Wait() after the key = %v, want it to have waited and timed out", err)
+		}
+		if d.State.Host.Known() {
+			t.Errorf("recorded host = %+v, want it untouched: the key is read, not attached", d.State.Host)
+		}
+	})
+
+	t.Run("a recorded host still answers when nothing detects now", func(t *testing.T) {
+		t.Parallel()
+		// Re-locating is ambient and can come up empty where the attach did
+		// not. Losing a capability the conversation already had would be a
+		// regression dressed as a correction.
+		d := newTestDirector(t, &fakeAdapter{name: "fake"}, now)
+		withHosts(d)
+		d.State.Host = Host{Harness: "panes", Hosting: harness.Hosting{Background: true}, Source: HostDetected}
+
+		_, err := d.Wait(context.Background(), WaitOptions{
+			Interval: 5 * time.Millisecond, Timeout: 30 * time.Millisecond,
+		})
+		if !errors.Is(err, ErrWaitTimeout) {
+			t.Fatalf("Wait() = %v, want it to have waited and timed out", err)
+		}
+	})
+
 	t.Run("--force overrides the refusal", func(t *testing.T) {
 		t.Parallel()
 		// Detection is ambient and can be wrong. Somebody who knows better must

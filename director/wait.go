@@ -62,8 +62,9 @@ type WaitOptions struct {
 // — an already-answered question is not going to transition into being asked
 // again.
 func (d *Director) Wait(ctx context.Context, opts WaitOptions) (Transition, error) {
-	if !opts.Force && !d.State.Host.Hosting.Background {
-		return Transition{}, fmt.Errorf("%w: %s.\n\n%s", ErrHostCannotWait, d.State.Host.Describe(), waitRefusalAdvice)
+	host := d.currentHost()
+	if !opts.Force && !host.Hosting.Background {
+		return Transition{}, fmt.Errorf("%w: %s.\n\n%s", ErrHostCannotWait, host.Describe(), waitRefusalAdvice)
 	}
 
 	until, err := healthSet(opts.Until)
