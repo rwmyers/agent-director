@@ -70,19 +70,7 @@ removes one director's memory of its own fleet.`,
 				}
 			}
 
-			switch len(failures) {
-			case 0:
-				return nil
-			case 1:
-				return failures[0]
-			default:
-				var out strings.Builder
-				fmt.Fprintf(&out, "%d of %d could not be retired:", len(failures), len(ids))
-				for _, failure := range failures {
-					fmt.Fprintf(&out, "\n\n%v", failure)
-				}
-				return fmt.Errorf("%s", out.String())
-			}
+			return combineFailures("retired", failures, len(ids))
 		},
 	}
 	cmd.Flags().BoolVar(&opt.Stop, "stop", false, "end every running engagement first")
@@ -129,36 +117,13 @@ func pickDirectors(cmd *cobra.Command, roots director.Roots) ([]string, error) {
 		options = append(options, huh.NewOption(describeForRemoval(summary), summary.ID))
 	}
 
-	p := newPrompter()
-	chosen, err := p.selectMany(
-		"Retire which directors?",
-		"Removing a director does not stop its agents — it makes them unreachable. Anything still running is refused unless you pass --stop or --force.",
-		options)
-	if err != nil || len(chosen) == 0 {
-		return nil, err
-	}
-
-	// Confirm, because the pick list is a multi-select and a stray keypress is
-	// otherwise indistinguishable from a decision.
-	var names []string
-	for _, summary := range survey.Directors {
-		for _, id := range chosen {
-			if summary.ID == id {
-				names = append(names, describeForRemoval(summary))
-			}
-		}
-	}
-	confirmed, err := p.confirm(
-		fmt.Sprintf("Retire %d director(s)?", len(chosen)),
-		strings.Join(names, "\n"),
-		"Retire", "Cancel")
-	if err != nil {
-		return nil, err
-	}
-	if !confirmed {
-		return nil, nil
-	}
-	return chosen, nil
+	return newPrompter().pick(pickList{
+		title:       "Retire which directors?",
+		description: "Removing a director does not stop its agents — it makes them unreachable. Anything still running is refused unless you pass --stop or --force.",
+		verb:        "Retire",
+		noun:        "director",
+		options:     options,
+	})
 }
 
 // describeForRemoval renders one director the way somebody choosing what to

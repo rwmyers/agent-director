@@ -1,9 +1,9 @@
 ---
 name: director-remove
-description: Drop one engagement from a director's record with director remove - how to resolve which one, when removing it strands a running agent, and what removal does not touch. Use when a spawn failed and left a row nothing can clear, when a finished engagement is only noise in the status table, or when asked to remove, clear or forget an engagement.
+description: Drop engagements from a director's record with director remove - how to resolve which ones, naming several at once, when removing one strands a running agent, and what removal does not touch. Use when a spawn failed and left a row nothing can clear, when a batch of finished engagements is only noise in the status table, or when asked to remove, clear or forget engagements.
 ---
 
-# Removing one engagement
+# Removing engagements
 
 ## The trap: removing a live engagement strands it
 
@@ -17,6 +17,12 @@ two ways out exist:
 
     director remove <id> --stop     end it, then forget it
     director remove <id> --force    leave it running, unreachable, deliberately
+
+The refusal is per engagement and naming several does not soften it. Every
+identifier in a batch is checked exactly as if it had been given on its own,
+and the flags apply to all of them — `--stop` in a batch stops every live one
+in it, which is a much larger act than stopping one. Name the batch, read what
+it refuses, and decide about those separately.
 
 **Take `--stop` unless somebody has said otherwise.** `--force` is for an agent
 that should genuinely keep working with no director tracking it, which is rare
@@ -46,6 +52,9 @@ whoever asked, with the candidates, and let them say which. Guessing between
 two engagements removes somebody else's work and nothing in the output says
 that it happened.
 
+Every fragment in a batch is resolved that way separately, so a batch is only
+as safe as its worst fragment. Resolve each one before you run anything.
+
 Every *other* director command matches identifiers exactly. So the moment you
 have resolved a fragment, expand it: run `director status --json`, find the
 one engagement, and use its full `id` for the `stop`, `read` or `note` you run
@@ -66,15 +75,28 @@ the result — id, title, health, progress:
 
     removed eng_41bfe6a01111ac1b  spawn onto herdr  stalled (no progress)
 
-One line, health first, the way `director status` composes it. Somebody told
-only "removed eng_41bf" has been given nothing to check you against. They still
-get to check you; they are just not made to answer a question first when they
-have already asked for the removal. Ambiguity is the gate here, not agreement —
-a fragment matching more than one engagement goes back to them, one match does
+One line each, health first, the way `director status` composes it — and one
+line per engagement when you removed several, not a count. Somebody told only
+"removed eng_41bf" has been given nothing to check you against, and somebody
+told "removed 6 engagements" has been given less than that. They still get to
+check you; they are just not made to answer a question first when they have
+already asked for the removal. Ambiguity is the gate here, not agreement — a
+fragment matching more than one engagement goes back to them, one match does
 not.
 
-Remove one at a time. There is no bulk form, and a loop over a fragment list is
-how a fleet gets cleared by somebody who meant to clear one row.
+## Clearing several
+
+`director remove` takes as many engagements as you name:
+
+    director remove eng_41bfe6a01111ac1b eng_9c02aa7730b1e5d4 eng_00d1f8b2c4e69a37
+
+This **best-effort, not all-or-nothing**. Whatever could be removed is removed,
+whatever could not is reported, and the command exits non-zero having done part
+of the job.
+
+`--json` returns a list of the removals that happened, one object per
+engagement, whether you named one or ten. What failed is on stderr and in the
+exit code, not in that list.
 
 ## What removal does not do
 
@@ -98,8 +120,9 @@ reading that the work was undone.
   Stop and remove are a pair: stop deals with the agent, remove deals with the
   record.
 - **You are done with the whole fleet** — `director retire`, which removes the
-  director and its entire record. Never remove engagements one at a time to
-  approximate it.
+  director and its entire record. Never remove every engagement in a batch to
+  approximate it: that leaves the director itself behind, still claimed, still
+  listed, holding nothing.
 - **The row is wrong rather than unwanted** — `director note` it. Removal is
   not a way to make a status table say what you wish it said.
 

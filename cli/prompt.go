@@ -2,8 +2,10 @@ package cli
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
@@ -137,4 +139,48 @@ func (p prompter) confirm(title, description, affirmative, negative string) (boo
 		return false, err
 	}
 	return confirmed, nil
+}
+
+// pickList is one multiple-choice question about things that are about to be
+// deleted: what to offer, and what the deletion is called.
+type pickList struct {
+	title       string
+	description string
+	// verb names the action in the confirmation and on its button — "Retire",
+	// "Remove".
+	verb string
+	// noun names one of the things being chosen — "director", "engagement".
+	noun    string
+	options []huh.Option[string]
+}
+
+// pick offers a multi-select and then confirms what came back.
+//
+// The confirmation is not ceremony. A multi-select is one stray keypress away
+// from a decision, and every caller here is about to delete a record that
+// nothing restores, so the chosen rows are said back before anything happens.
+// Backing out at either step returns nothing chosen and no error: declining to
+// delete something is a normal outcome rather than a failure.
+func (p prompter) pick(list pickList) ([]string, error) {
+	chosen, err := p.selectMany(list.title, list.description, list.options)
+	if err != nil || len(chosen) == 0 {
+		return nil, err
+	}
+
+	var labels []string
+	for _, option := range list.options {
+		for _, value := range chosen {
+			if option.Value == value {
+				labels = append(labels, option.Key)
+			}
+		}
+	}
+	confirmed, err := p.confirm(
+		fmt.Sprintf("%s %d %s(s)?", list.verb, len(chosen), list.noun),
+		strings.Join(labels, "\n"),
+		list.verb, "Cancel")
+	if err != nil || !confirmed {
+		return nil, err
+	}
+	return chosen, nil
 }

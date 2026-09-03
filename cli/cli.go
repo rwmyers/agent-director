@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/rwmyers/agent-director/director"
 	"github.com/spf13/cobra"
@@ -150,6 +151,29 @@ func open() (*director.Director, error) {
 func writeRow(out io.Writer, format string, args ...any) error {
 	_, err := fmt.Fprintf(out, format, args...)
 	return err
+}
+
+// combineFailures turns what a multi-target command could not do into one
+// error.
+//
+// A single failure is returned exactly as it stands, so its wrapping survives
+// and the exit code still says what kind of failure it was. Several are joined
+// under a count of how many of how many, because a command that acted on some
+// of its arguments and not others is only intelligible if it says which.
+func combineFailures(what string, failures []error, attempted int) error {
+	switch len(failures) {
+	case 0:
+		return nil
+	case 1:
+		return failures[0]
+	default:
+		var out strings.Builder
+		fmt.Fprintf(&out, "%d of %d could not be %s:", len(failures), attempted, what)
+		for _, failure := range failures {
+			fmt.Fprintf(&out, "\n\n%v", failure)
+		}
+		return fmt.Errorf("%s", out.String())
+	}
 }
 
 // emit writes a value as JSON, used by every --json path so that there is one
