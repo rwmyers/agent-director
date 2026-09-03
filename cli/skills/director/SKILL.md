@@ -392,3 +392,5 @@ attach` said this host allows, rather than hoping for a turn.
   output. Load it before you read an engagement.
 - `director-workflows` — task types, permissions, and placement. Load it
   before your first spawn of a session.
+- `progress-engagement` — chaining one engagement to a successor, so that
+  "when that one is done, start this" needs nobody present in between.
