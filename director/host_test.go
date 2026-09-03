@@ -15,13 +15,15 @@ import (
 // the case the conservative default exists for.
 type hostAdapter struct {
 	fakeAdapter
-	hosting harness.Hosting
-	ref     string
-	inside  bool
+	hosting  harness.Hosting
+	ref      string
+	inside   bool
+	displays bool
 }
 
 func (h *hostAdapter) Hosts() harness.Hosting { return h.hosting }
 func (h *hostAdapter) Locate() (string, bool) { return h.ref, h.inside }
+func (h *hostAdapter) Displays() bool         { return h.displays }
 
 // withHosts points a director at a set of host-aware adapters, replacing both
 // the registry lookup and the list of names location walks.
@@ -60,6 +62,41 @@ func TestLocateHost(t *testing.T) {
 		}
 		if host.Source != HostDetected {
 			t.Errorf("Source = %q, want %q", host.Source, HostDetected)
+		}
+	})
+
+	t.Run("an agent inside a multiplexer detects as the agent", func(t *testing.T) {
+		t.Parallel()
+		// The shape this whole thing exists for: a Claude Code conversation in
+		// a herdr pane. The pane offers both bits and the agent only one, and
+		// the agent is still the answer — nothing can push a turn into it, and
+		// a host that claimed otherwise would have the director hand back
+		// promising a watcher that does not exist.
+		d := newTestDirector(t, &fakeAdapter{name: "fake"}, now)
+		withHosts(d,
+			&hostAdapter{fakeAdapter: fakeAdapter{name: "panes"}, hosting: full, ref: "w6:p1", inside: true, displays: true},
+			&hostAdapter{fakeAdapter: fakeAdapter{name: "sessions"}, hosting: harness.Hosting{Background: true}, ref: "3f0c", inside: true},
+		)
+
+		host := d.locateHost()
+		if host.Harness != "sessions" || host.Ref != "3f0c" {
+			t.Errorf("locateHost() = %+v, want the innermost sessions/3f0c", host)
+		}
+		if host.Hosting != (harness.Hosting{Background: true}) {
+			t.Errorf("Hosting = %v, want background only — the pane's wake is not the agent's", host.Hosting)
+		}
+	})
+
+	t.Run("a multiplexer with no agent inside it keeps its wake", func(t *testing.T) {
+		t.Parallel()
+		// A director at a bare prompt in a pane really can be typed into.
+		// Standing aside is only ever in favour of an agent.
+		d := newTestDirector(t, &fakeAdapter{name: "fake"}, now)
+		withHosts(d, &hostAdapter{fakeAdapter: fakeAdapter{name: "panes"}, hosting: full, ref: "w6:p1", inside: true, displays: true})
+
+		host := d.locateHost()
+		if host.Harness != "panes" || host.Hosting != full {
+			t.Errorf("locateHost() = %+v, want panes offering %v", host, full)
 		}
 	})
 

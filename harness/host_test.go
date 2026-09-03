@@ -8,11 +8,12 @@ import (
 // stub is the minimum Adapter a registry test needs. It is deliberately not a
 // working harness: these tests are about declarations, not about spawning.
 type stub struct {
-	name    string
-	hosting *Hosting
-	ref     string
-	inside  bool
-	locates bool
+	name     string
+	hosting  *Hosting
+	ref      string
+	inside   bool
+	locates  bool
+	displays bool
 }
 
 func (s *stub) Name() string                            { return s.name }
@@ -40,10 +41,20 @@ type locatingStub struct {
 
 func (l locatingStub) Locate() (string, bool) { return l.ref, l.inside }
 
+// displayingStub is a locating adapter that has declared itself a display
+// layer, which is the multiplexer half of the nested case.
+type displayingStub struct {
+	locatingStub
+}
+
+func (d displayingStub) Displays() bool { return true }
+
 // adapterFor wraps a stub in exactly the optional interfaces it declares, so a
 // test can say "this adapter has no Hosts method" and mean it.
 func adapterFor(s *stub) Adapter {
 	switch {
+	case s.hosting != nil && s.locates && s.displays:
+		return displayingStub{locatingStub{hostingStub{s}}}
 	case s.hosting != nil && s.locates:
 		return locatingStub{hostingStub{s}}
 	case s.hosting != nil:
@@ -153,7 +164,9 @@ func TestLocate(t *testing.T) {
 		return adapter, nil
 	}
 
-	t.Run("nested harnesses resolve to the one offering the most", func(t *testing.T) {
+	t.Run("two layers of the same kind resolve to the one offering the most", func(t *testing.T) {
+		// Neither of these declared itself a display, so there is nothing to
+		// tell them apart by depth and what they offer breaks the tie.
 		// "inner" sorts first, so taking the first answer would lose wake.
 		got, ok := Locate([]string{"elsewhere", "inner", "outer", "silent", "missing"}, lookup)
 		if !ok {
@@ -161,6 +174,56 @@ func TestLocate(t *testing.T) {
 		}
 		if got.Harness != "outer" || got.Ref != "pane-3" || got.Hosting != full {
 			t.Errorf("Locate() = %+v, want outer/pane-3/%v", got, full)
+		}
+	})
+
+	t.Run("an agent inside a multiplexer resolves to the agent", func(t *testing.T) {
+		// The real shape of the bug: a Claude Code conversation in a herdr
+		// pane. The pane offers more — it can be typed into — and taking it
+		// would tell the director it can be woken when nothing can reach the
+		// agent sitting in the pane. The innermost layer is the answer, and the
+		// display layer says so itself rather than being recognised by name.
+		layered := map[string]Adapter{
+			"pane":  adapterFor(&stub{name: "pane", hosting: &full, locates: true, displays: true, inside: true, ref: "pane-3"}),
+			"agent": adapterFor(&stub{name: "agent", hosting: &backgroundOnly, locates: true, inside: true, ref: "sess-1"}),
+		}
+		layeredLookup := func(name string) (Adapter, error) {
+			adapter, ok := layered[name]
+			if !ok {
+				return nil, ErrNoSkillLocations
+			}
+			return adapter, nil
+		}
+
+		// Both orders, because the answer must come from the declaration and
+		// not from whichever adapter happened to be asked first.
+		for _, order := range [][]string{{"agent", "pane"}, {"pane", "agent"}} {
+			got, ok := Locate(order, layeredLookup)
+			if !ok {
+				t.Fatalf("Locate(%v) found nothing", order)
+			}
+			if got.Harness != "agent" || got.Ref != "sess-1" || got.Hosting != backgroundOnly {
+				t.Errorf("Locate(%v) = %+v, want agent/sess-1/%v", order, got, backgroundOnly)
+			}
+		}
+	})
+
+	t.Run("a multiplexer with nothing inside it is still the host", func(t *testing.T) {
+		// Standing aside is only ever in favour of an agent. A director at a
+		// bare shell prompt in a pane has the pane as its host, wake and all,
+		// and the fix must not cost it that.
+		only := map[string]Adapter{
+			"pane": adapterFor(&stub{name: "pane", hosting: &full, locates: true, displays: true, inside: true, ref: "pane-3"}),
+		}
+		got, ok := Locate([]string{"pane"}, func(name string) (Adapter, error) {
+			adapter, present := only[name]
+			if !present {
+				return nil, ErrNoSkillLocations
+			}
+			return adapter, nil
+		})
+		if !ok || got.Harness != "pane" || got.Hosting != full {
+			t.Errorf("Locate() = %+v, %v, want pane offering %v", got, ok, full)
 		}
 	})
 

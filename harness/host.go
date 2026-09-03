@@ -150,6 +150,26 @@ type SelfLocator interface {
 	Locate() (ref string, inside bool)
 }
 
+// Display is the optional declaration that a harness shows another harness's
+// conversations rather than being one of them.
+//
+// It exists because nesting is ordinary: a director can be a Claude Code
+// conversation running in a herdr pane, and both adapters correctly answer that
+// this process is inside them. Only one of them is the conversation, though,
+// and what a director can do about its own next turn is a fact about the agent
+// it is rather than about what is drawing the pane around it. Claude Code can
+// background a command and be re-entered when it exits, and cannot be woken —
+// that stays true whichever multiplexer is on screen, so the multiplexer says
+// so here and stands aside.
+//
+// An adapter that does not implement this is not a display, which is the right
+// default: an adapter that has not been asked the question is far more likely
+// to be an agent than a terminal multiplexer, and being wrong in that direction
+// costs the innermost answer nothing.
+type Display interface {
+	Displays() bool
+}
+
 // HostingOf reports what an adapter declares it offers as a host.
 func HostingOf(adapter Adapter) Hosting {
 	if host, ok := adapter.(Host); ok {
@@ -163,6 +183,11 @@ type Location struct {
 	Harness string
 	Ref     string
 	Hosting Hosting
+	// Display is true when this adapter said it is showing somebody else's
+	// conversation rather than being it. It is carried on the answer so the
+	// choice between nested layers is made from a declaration rather than from
+	// adapter names.
+	Display bool
 }
 
 // Locate asks every named adapter whether this process is running inside it,
@@ -170,10 +195,17 @@ type Location struct {
 //
 // Nesting is real and is not an error: a director can be a Claude Code
 // conversation running in a herdr pane, and both adapters correctly answer yes.
-// When that happens the one offering the most is taken, because these bits
-// describe what is possible rather than who is nominally in charge — if
-// something can reach into this conversation, then this conversation can be
-// woken, whichever layer owns the keyboard. Ties fall to the order the caller
+// When that happens the innermost layer wins — the agent the director actually
+// is, not the multiplexer displaying it. The hosting bits are a fact about that
+// agent: Claude Code can background a command and be re-entered when it exits,
+// and cannot be woken by anything pushing at it, and neither of those changes
+// because a pane is drawn around it. Taking the most capable layer instead is
+// how a director ends up promising a wake nothing will ever deliver.
+//
+// "Innermost" is a declaration, not an inference: an adapter that shows another
+// harness's conversations implements Display and stands aside. Between two
+// layers of the same kind there is nothing to tell them apart by depth, so the
+// one offering the most is taken; ties after that fall to the order the caller
 // gave, which Names sorts, so the answer is stable rather than dependent on map
 // iteration.
 //
@@ -199,16 +231,41 @@ func Locate(names []string, lookup func(string) (Adapter, error)) (Location, boo
 		if !inside {
 			continue
 		}
-		candidate := Location{Harness: name, Ref: ref, Hosting: HostingOf(adapter)}
-		if !found || offers(candidate.Hosting) > offers(best.Hosting) {
+		candidate := Location{
+			Harness: name,
+			Ref:     ref,
+			Hosting: HostingOf(adapter),
+			Display: displays(adapter),
+		}
+		if !found || closer(candidate, best) {
 			best, found = candidate, true
 		}
 	}
 	return best, found
 }
 
+// displays reports whether an adapter has declared itself a display layer.
+func displays(adapter Adapter) bool {
+	display, ok := adapter.(Display)
+	return ok && display.Displays()
+}
+
+// closer reports whether candidate sits nearer the director than best does.
+//
+// The agent layer beats the display layer outright, and no amount of capability
+// on the outside buys its way past that — a pane that could be typed into does
+// not make the agent inside it wakeable. Only where the two candidates are the
+// same kind of layer, and depth therefore says nothing, does what they offer
+// break the tie.
+func closer(candidate, best Location) bool {
+	if candidate.Display != best.Display {
+		return !candidate.Display
+	}
+	return offers(candidate.Hosting) > offers(best.Hosting)
+}
+
 // offers counts the capabilities a hosting declaration grants, for choosing
-// between nested harnesses.
+// between nested harnesses of the same kind.
 func offers(h Hosting) int {
 	count := 0
 	if h.Background {

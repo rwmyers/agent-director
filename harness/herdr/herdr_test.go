@@ -985,6 +985,13 @@ func TestHostsAndLocate(t *testing.T) {
 	if !inside || ref != "w6:p1" {
 		t.Errorf("Locate() in a pane = %q, %v, want \"w6:p1\", true", ref, inside)
 	}
+
+	// A pane is a window onto an agent, not the agent. Declaring this is what
+	// keeps herdr from being taken as the host of a Claude Code conversation it
+	// is merely drawing, and being handed a wake nothing can deliver.
+	if !adapter.Displays() {
+		t.Error("Displays() = false, want true: a pane shows another harness's conversation")
+	}
 }
 
 func TestDisposeClosesThePane(t *testing.T) {

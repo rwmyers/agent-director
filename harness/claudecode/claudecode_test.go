@@ -297,4 +297,11 @@ func TestHostsAndLocate(t *testing.T) {
 	if ref, inside := adapter.Locate(); !inside || ref != "" {
 		t.Errorf("Locate() without a session id = %q, %v, want \"\", true", ref, inside)
 	}
+
+	// This is the conversation, not a window onto one. It must not declare
+	// itself a display, or it would stand aside inside a multiplexer and hand
+	// the host back to the thing drawing the pane.
+	if _, ok := any(adapter).(harness.Display); ok {
+		t.Error("the Claude Code adapter implements harness.Display, want it to be the innermost layer")
+	}
 }

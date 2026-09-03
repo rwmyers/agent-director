@@ -132,6 +132,18 @@ func (a *Adapter) Hosts() harness.Hosting {
 // anywhere.
 func (a *Adapter) Locate() (string, bool) { return InPane() }
 
+// Displays says that herdr is showing somebody else's conversation.
+//
+// A pane is a window onto an agent, not the agent. When a director is a Claude
+// Code conversation in a pane, both adapters truthfully report it is inside
+// them, and the question of how that director gets its next turn belongs to
+// Claude Code: it can background a command and be re-entered when it exits, and
+// nothing can push a turn into it. The pane being typeable does not change
+// that, because what would be typed into is the agent's own prompt and the
+// agent decides when it reads it. So herdr declares what it offers a director
+// sitting in a bare pane, and stands aside wherever an agent is in the way.
+func (a *Adapter) Displays() bool { return true }
+
 // Enforceable lists what this adapter can control.
 //
 // herdr does not enforce anything itself — it launches an agent binary in a
