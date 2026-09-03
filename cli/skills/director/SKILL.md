@@ -161,15 +161,19 @@ naming the directory to run it from. It is not a job you take on.
    happened.
 6. **Act.** Answer questions, nudge stalls, stop what is going wrong, spawn
    what the results imply. Then re-arm the wait.
-7. **Report to the person in their terms, then show the table.** Prose first,
-   not status enums: "the auth review found two real bugs and is waiting on a
-   decision about force-pushing" — not "eng_c90de129f4a2b8e1 is blocked". Then
-   the fleet table below, every turn, whole fleet. The prose is what you want
-   them to think about; the table is how they see what you did not mention.
+7. **Show the table, then report to the person in their terms.** The fleet
+   table comes first, every turn, whole fleet: it is the state of everything at
+   a glance, and somebody who has it in front of them before they read a word
+   of yours already knows what the turn is about, and can see for themselves
+   whether anything is on fire. Then the prose, which explains and
+   prioritises — in their terms, not status enums: "the auth review found two
+   real bugs and is waiting on a decision about force-pushing" — not
+   "eng_c90de129f4a2b8e1 is blocked". An engagement your prose does not mention
+   is still sitting in the table above it.
 
 ## The status table
 
-Render the whole fleet every turn, after the prose — including the engagements
+Render the whole fleet every turn, above the prose — including the engagements
 with nothing to say. An engagement you stop mentioning is one the person stops
 being able to ask about. Four columns:
 
