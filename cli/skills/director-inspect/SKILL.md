@@ -41,7 +41,7 @@ Read the transcript, or ask the agent, first.
 | `ok` | meeting its reporting contract | nothing |
 | `quiet` | overdue a report, but the harness shows it working | nothing — it is busy, not stuck |
 | `stalled` | overdue **and** nothing is happening | `director nudge <id>` |
-| `blocked` | it asked a question | `director answer <ask> "<text>"` |
+| `blocked` | it asked a question | `director status asks <ask>`, then `director answer <ask> "<text>"` |
 | `abandoned` | ended without finishing | read it; find out what happened |
 | `complete` | ended having finished | collect the result |
 | `unknown` | not enough signal | wait a turn, then treat as stalled |
@@ -53,6 +53,18 @@ going fine.
 
 If an engagement is `stalled` and you have already nudged it once, do not nudge
 again. Escalate to the person: something is wrong that you cannot fix by asking.
+
+## Where the work is
+
+`materials` is the engagement's own statement of where its work landed: a
+branch, a pull request, a path, a document. It reports it with `director report
+--materials`, and each report **replaces** the set, so what you see is the
+current one rather than everything ever mentioned.
+
+Two things follow. An empty `materials` means the agent has not said — it does
+not mean the agent has produced nothing, and it is not something you fix by
+scraping paths out of its prose into `director note`. And a material that
+disappeared between two turns was retracted by the agent, not lost by you.
 
 ## Putting a verdict in one cell
 
@@ -96,16 +108,51 @@ repeatedly; do not ask for everything at once.
 Summarise as you read. Do not pull a transcript into your context and then
 reason over it — that is how a director ends up as expensive as the work.
 
-`director status --json` carries two fields the table never prints. `note` is
-whatever *you* last wrote with `director note` — only the most recent one,
-because writing a note replaces it. `detail` is harness plumbing: `pid`, `log`,
-`prompt`, `transcript`. `detail` is not the engagement's output; it is filled in
-identically for an agent that delivered and one that died in its first second.
+## What `status --json` carries that the table does not
+
+Per engagement:
+
+- `note` — whatever *you* last wrote with `director note`. Only the most recent
+  one; writing a note replaces it.
+- `materials` — the full list of where the engagement said its work can be
+  found, in the order it named them. The table shows the first one clipped plus
+  `+N`, because it is on screen every turn; this is the whole thing, and the
+  place to get a URL you can click. Absent entirely when the engagement has
+  reported none — an engagement that has produced nothing looks like one that
+  has produced nothing.
+- `open_asks` — the identifiers of the questions it is waiting on. Identifiers
+  only. There is **no** `pending_ask` object and no question text anywhere in
+  `status --json`; see *Answering questions* below.
+- `detail` — harness plumbing: `pid`, `log`, `prompt`, `transcript`. It is not
+  the engagement's output; it is filled in identically for an agent that
+  delivered and one that died in its first second. Never put it in a Materials
+  column.
 
 ## Answering questions
 
 `blocked` means an agent asked something it correctly refused to guess at.
-`director status` prints the question and the exact command to answer it.
+
+`director status` does **not** print the question. It lists the open ones by
+identifier under the table, with the commands that act on them:
+
+```
+1 open question, text not shown:
+  ask_578fc0d2  eng_a4b17f20  waiting 4m
+
+  read:    director status asks ask_578fc0d2
+  answer:  director answer ask_578fc0d2 "..."
+```
+
+`director status asks <id> [<id>...]` prints the full text of the questions you
+name, and works under `--json` too. `director status asks` with nothing named
+lists the open ones by identifier and prints no text — it is the index, not a
+dump.
+
+**Fetch the text of the one you are about to answer, not all of them.** That
+split is the point: status is the command you run every turn, and five agents
+blocked on large plans would otherwise reproduce all five plans on every one of
+those turns until somebody answered. Pulling them all back by hand recreates
+exactly that.
 
 Answer decisively. "Do whatever you think is best" hands the decision back to
 an agent that already told you it should not make it. If the choice is genuinely

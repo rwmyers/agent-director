@@ -88,3 +88,20 @@ func trimFinalNewline(text string) string {
 	}
 	return strings.TrimSuffix(strings.TrimSuffix(text, "\n"), "\r")
 }
+
+// clip shortens a value to fit a fixed-width table cell, marking that it did.
+//
+// Rune-aware rather than byte-aware, because a path or a branch name may hold
+// multi-byte characters and cutting one in half produces a cell no terminal can
+// render. The ellipsis is inside the width, so the result never exceeds what
+// the column was budgeted.
+func clip(value string, width int) string {
+	if utf8.RuneCountInString(value) <= width {
+		return value
+	}
+	runes := []rune(value)
+	if width <= 1 {
+		return "…"
+	}
+	return string(runes[:width-1]) + "…"
+}

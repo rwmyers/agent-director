@@ -138,10 +138,12 @@ file we talked about".
 not done anything yet, and you have not finished delegating until something
 other than the person can wake you.
 
-- **Note what is durable.** `director note <id> "<text>"`: the branch, the
-  boundaries you defaulted, anything the person said that did not fit in the
+- **Note what is durable.** `director note <id> "<text>"`: why you spawned it,
+  the boundaries you defaulted, anything the person said that did not fit in the
   brief. Your context gets compacted; the note does not. It replaces rather
-  than appends, so re-write the whole list each time.
+  than appends, so re-write the whole list each time. Where the work lands is
+  not yours to record — the engagement reports that itself with `director
+  report --materials`, and it shows up in the `MATERIALS` column.
 - **Arrange your next turn** the way the `next turn:` line from `director
   attach` said you can — usually backgrounding `director wait` so the engagement
   finishing or blocking wakes you. The `director` skill's *Do not wait for a

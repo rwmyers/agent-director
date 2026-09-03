@@ -208,24 +208,63 @@ the entire reason this column is composed rather than picked. **Never put
 lifecycle in this cell** — `done` means only that no process is attached, and
 anyone reading `done` under a heading that says "status" will hear "finished".
 When a row is `blocked`, put the question and the `director answer` command
-under the table, not in the cell.
+under the table, not in the cell — and see *Questions are listed, not printed*
+below for where the question text comes from now.
 
 **Materials** is what the person could go and look at: a branch, a PR, a path, a
-file the agent named. **`director` does not track any of this.** Nothing
-attaches an artifact to an engagement and no command reports one, so this column
-is yours to maintain or it stays empty.
+file the agent named. **The engagement reports this itself.** It runs `director
+report --materials <branch> --materials <url>`, and the current set comes back
+in the `MATERIALS` column of `director status` and, in full, as `.materials` in
+`director status --json`.
 
-When an agent tells you where its work landed, record it the same turn with
-`director note <id> "<text>"`, and read it back out of `director status --json`
-as `.note`. Two things will catch you out. The note is not in the plain-text
-table — only `--json` has it. And `director note` **replaces** the note rather
-than appending, so re-write the whole accumulated list each time or you will
-quietly lose what you recorded before.
+Take it from there and nowhere else. Do not scrape branch names and paths out of
+an agent's prose and hand-write them into `director note` — the agent knows
+where its work landed and you are guessing from a screen snapshot, and the note
+replaces rather than appends, so the accumulated list is one forgetful turn away
+from being lost.
 
-Write `—` when there is nothing yet, and mean it. Do not fill the cell with the
-`detail.transcript` or `detail.log` paths from `--json`: those are present for
-every engagement from the moment it spawns, so using them makes an engagement
-that has produced nothing look exactly like one that has produced something.
+The table's cell is shortened — the first material clipped, then `+N` for the
+rest — because that column is on screen every turn. Read `--json` when you need
+the whole list, or when you need a URL you can actually click.
+
+Write `—` when there is nothing yet, and mean it: an engagement that has
+reported no materials has an empty cell, and that is the truth about it. Do not
+fill it with the `detail.transcript` or `detail.log` paths from `--json`: those
+are present for every engagement from the moment it spawns, so using them makes
+an engagement that has produced nothing look exactly like one that has produced
+something.
+
+**If an engagement is doing work worth looking at and its materials stay empty,
+say so in the brief.** `--materials` is described in the reporting contract every
+agent is given, but an agent that never mentions it is not lying — it is just
+silent, and silence here looks the same as having produced nothing.
+
+## Questions are listed, not printed
+
+`director status` does **not** print the text of a question an agent is waiting
+on. It lists the open ones by identifier under the table:
+
+```
+2 open questions, text not shown:
+  ask_578fc0d2  eng_a4b17f20  waiting 4m
+  ask_9f01ab33  eng_88e3c1a5  waiting 3m
+
+  read:    director status asks ask_578fc0d2 ask_9f01ab33
+  answer:  director answer <ask> "..."
+```
+
+Run `director status asks <id>` for the full text, once, when you are about to
+deal with it. That is the whole reason for the split: five agents each blocked
+on a large plan would otherwise reproduce all five plans in every `director
+status` you run, on every turn, until somebody answers — and status is the
+command you run every turn before deciding anything.
+
+So do not run `director status asks` with every identifier out of habit. Read
+the one you are about to answer.
+
+`--json` carries the identifiers in each engagement's `open_asks` and no
+question text at all. `director status asks <id> --json` returns the questions
+as objects.
 
 ## Do not wait for a turn that may never come
 
@@ -326,9 +365,11 @@ whether the fix is one line or a redesign."*
 `director note <id> "<text>"` when you form the thought, not when you need it.
 Your context will be compacted. The engagement list plus its notes is the
 durable record of what is in flight; your own memory is not.
-It is also the only place the Materials column can come from, so write the
-branch, the PR or the path into the note the turn you learn it — and re-state
-the ones already there, because the note is replaced and not appended to.
+
+Use it for what only *you* know: why you spawned this, what you decided, what
+you promised somebody. Not for where the work is — that is the engagement's
+`--materials`, and it is a better source than your reading of its prose. The
+note still **replaces** rather than appends, so re-state anything already in it.
 
 ## Two things you must not do
 

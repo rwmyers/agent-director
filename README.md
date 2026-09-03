@@ -9,14 +9,21 @@ $ director spawn --task investigate "Work out why TestFoo is flaky. Change nothi
 eng_c90de129  Work out why TestFoo is flaky  [investigate on claude-code]
 
 $ director status
-ID            HEALTH   LIFECYCLE  PROGRESS  SILENT  TITLE
-eng_c90de129  quiet    working    reading   7m      Work out why TestFoo is flaky
-eng_a4b17f20  blocked  idle       editing   2m      Fix the auth refactor
-eng_88e3c1a5  stalled  working    planning  41m     Migrate the config parser
+ID            HEALTH   LIFECYCLE  PROGRESS  SILENT  MATERIALS            TITLE
+eng_c90de129  quiet    working    reading   7m                           Work out why TestFoo is flaky
+eng_a4b17f20  blocked  idle       editing   2m      feat/auth +1         Fix the auth refactor
+eng_88e3c1a5  stalled  working    planning  41m                          Migrate the config parser
 
-eng_a4b17f20 asked: May I force-push to feat/auth?
-  answer with: director answer ask_578fc0d2 "..."
+1 open question, text not shown:
+  ask_578fc0d2  eng_a4b17f20  waiting 2m
+
+  read:    director status asks ask_578fc0d2
+  answer:  director answer ask_578fc0d2 "..."
 ```
+
+Questions are listed rather than reproduced, because `status` is meant to be run
+every turn and a question printed on every turn is a question read once and
+paid for a hundred times. `director status asks <id>` has the text.
 
 ## Getting started
 
@@ -180,8 +187,15 @@ looking.
 
 ```sh
 director report --progress reading --message "3 of 7 files done"
+director report --materials feat/auth --materials https://github.com/o/r/pull/12
 ANSWER=$(director ask "May I force-push to feat/auth?" --wait)
 ```
+
+`--materials` is where the work can be found — a branch, a pull request, a path.
+The engagement is the only thing that knows, so it is the only thing that says;
+`director status` shows it as a column and `--json` carries the whole list. Each
+report replaces the set rather than adding to it, so an agent names everything
+that is current — and a report that leaves the flag off changes nothing.
 
 Asking is what makes `blocked` honest — no harness reliably reports "waiting on
 a human", so before this the state was guessed or missed.
