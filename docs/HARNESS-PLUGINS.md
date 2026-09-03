@@ -148,6 +148,31 @@ you declared, per harness, and may never widen it:
 hosts = background
 ```
 
+#### `disposes` — optional
+
+Whether your harness gives a conversation a slot in its own interface — a pane,
+a window, a tab — that director can ask you to reclaim.
+
+```json
+{"api_version": 1, "name": "demo", "version": "0.1.0", "enforces": [],
+ "disposes": true}
+```
+
+Declare it and `director remove` closes that slot when it forgets an engagement,
+through the `dispose` verb below. Omit it and removal behaves exactly as it
+always has: the record goes and nothing else is touched, with no error and no
+warning. That is the right answer for a harness with nothing to give back — a
+transcript on disk is not a slot, and there is nothing to close.
+
+A slot is not the conversation and it is not the work. It is the seat your
+harness allocated because director asked for a conversation, and for some
+harnesses nothing ever reclaims it: the agent finishes, and a dead pane sits in
+somebody's session until a person notices. Saying `true` here is saying that
+this is yours to give back when asked.
+
+This is one bool rather than a block because there is one question. Omitting it
+means no, which is what every plugin written before this existed means.
+
 ### `spawn`
 
 Start a conversation and **return as soon as it is addressable** — never when
@@ -198,6 +223,28 @@ engagement toward "stalled" rather than assuming it is fine.
 a transcript. Refuse a mode you cannot honour rather than implementing a kill
 under a gentler name — a director told it interrupted a turn, when in fact the
 process is gone, will draw the wrong conclusion about what it can resume.
+
+### `dispose` — optional
+
+Reclaim the slot a conversation occupies. Takes `ref`. Only ever called when
+your describe declared `disposes`, so a plugin that did not declare it never
+sees this verb.
+
+**A slot that has already gone is a success.** What was asked for is that it no
+longer be held, and it is not — reporting an error for a pane somebody closed by
+hand would turn tidying up into a failure.
+
+**This is not `stop`.** Stopping ends a conversation and must leave it resumable
+and readable; disposing gives back the seat it was sitting in. director calls
+them at different moments and for different reasons, and only disposal is tied
+to the record being forgotten. Implement it separately even if your stop happens
+to close the slot as well.
+
+Nothing is said about whether the conversation was finished, and you should not
+check. director has already decided, with more information than you have: it
+knows whether it just stopped the agent, whether the person passed `--force`,
+and whether this is the conversation the director itself is sitting in. It never
+calls this for any of those.
 
 ### `read` — optional
 

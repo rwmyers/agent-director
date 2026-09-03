@@ -238,6 +238,16 @@ type Description struct {
 	// Omitting it declares nothing, which is what an adapter written before
 	// this existed means: it was never asked, so it has not answered.
 	Hosting *Hosting `json:"hosting,omitempty"`
+	// Disposes says this harness gives a conversation a slot in its own
+	// interface — a pane, a window, a tab — that director can ask it to
+	// reclaim, through the dispose verb.
+	//
+	// A plain bool rather than a block, because there is one question and it
+	// has one answer. Omitting it says no, which is what every plugin written
+	// before this existed means and is the only safe reading: a director that
+	// wrongly believes a harness will tidy up leaves slots behind, while one
+	// that wrongly believes a harness will not is exactly today's behaviour.
+	Disposes bool `json:"disposes,omitempty"`
 }
 
 // Hosting is the optional hosting block of a describe reply. It is how a plugin

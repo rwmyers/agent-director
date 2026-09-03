@@ -705,3 +705,24 @@ func (a *Adapter) Stop(_ context.Context, req harness.StopRequest) error {
 	}
 	return nil
 }
+
+// Disposes is true. A herdr conversation occupies a pane, which is a slot herdr
+// allocated on director's behalf and which nothing else ever reclaims.
+func (a *Adapter) Disposes() bool { return true }
+
+// Dispose closes the pane the conversation was running in.
+//
+// The pane is not the agent's work — the branch, the worktree and the files it
+// wrote are all somewhere else, and closing a pane touches none of them. It is
+// the seat director asked herdr for, and an agent that has finished leaves it
+// sitting in somebody's session until a person notices.
+//
+// A pane that has already gone is a success, for the same reason Stop treats it
+// as one: what was asked for is that the slot no longer be held.
+func (a *Adapter) Dispose(_ context.Context, req harness.DisposeRequest) error {
+	err := a.rpc().call("pane.close", map[string]any{"pane_id": req.Ref}, nil)
+	if err != nil && !notFound(err) {
+		return err
+	}
+	return nil
+}

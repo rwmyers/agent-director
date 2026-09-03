@@ -986,3 +986,60 @@ func TestHostsAndLocate(t *testing.T) {
 		t.Errorf("Locate() in a pane = %q, %v, want \"w6:p1\", true", ref, inside)
 	}
 }
+
+func TestDisposeClosesThePane(t *testing.T) {
+	t.Parallel()
+	server := newFakeServer(t, map[string]any{})
+	adapter := server.adapter()
+
+	if !adapter.Disposes() {
+		t.Fatal("Disposes() = false, want herdr to declare it has panes to give back")
+	}
+	if err := adapter.Dispose(context.Background(), harness.DisposeRequest{Ref: "p7"}); err != nil {
+		t.Fatalf("Dispose() = %v, want no error", err)
+	}
+
+	if len(server.calls) != 1 {
+		t.Fatalf("Dispose() made %d calls, want 1", len(server.calls))
+	}
+	call := server.calls[0]
+	if call.Method != "pane.close" {
+		t.Errorf("Dispose() called %s, want pane.close", call.Method)
+	}
+	params, ok := call.Params.(map[string]any)
+	if !ok {
+		t.Fatalf("Dispose() sent params %#v, want an object", call.Params)
+	}
+	if params["pane_id"] != "p7" {
+		t.Errorf("Dispose() closed pane %v, want p7", params["pane_id"])
+	}
+}
+
+func TestDisposeTreatsAPaneThatHasGoneAsDone(t *testing.T) {
+	t.Parallel()
+	// What was asked for is that the slot no longer be held, and it is not.
+	// Reporting a failure here would turn tidying up into an error on the one
+	// path where the record has already been removed and cannot be retried.
+	server := newFakeServer(t, map[string]any{
+		"pane.close": &responseError{Code: "pane_not_found", Message: "no such pane"},
+	})
+
+	if err := server.adapter().Dispose(context.Background(), harness.DisposeRequest{Ref: "gone"}); err != nil {
+		t.Errorf("Dispose() = %v, want a pane that has already gone to be a success", err)
+	}
+}
+
+func TestDisposeReportsARefusalItCannotExplainAway(t *testing.T) {
+	t.Parallel()
+	server := newFakeServer(t, map[string]any{
+		"pane.close": &responseError{Code: "permission_denied", Message: "not yours to close"},
+	})
+
+	err := server.adapter().Dispose(context.Background(), harness.DisposeRequest{Ref: "p7"})
+	if err == nil {
+		t.Fatal("Dispose() = nil, want a refusal to be reported")
+	}
+	if !strings.Contains(err.Error(), "not yours to close") {
+		t.Errorf("Dispose() error = %q, want it to carry what herdr said", err)
+	}
+}

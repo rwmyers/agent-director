@@ -29,6 +29,9 @@ const (
 	VerbList  = "list"
 	VerbStop  = "stop"
 	VerbRead  = "read"
+	// VerbDispose reclaims the slot a conversation occupies in the harness's
+	// own interface. Only reached when describe declared "disposes".
+	VerbDispose = "dispose"
 )
 
 func init() { RegisterAll() }
@@ -143,6 +146,32 @@ func (a *Adapter) Locate() (string, bool) {
 		ref = os.Getenv(description.Hosting.RefEnv)
 	}
 	return ref, true
+}
+
+// Disposes reports whether the plugin says its harness has a slot to reclaim.
+//
+// A plugin that declares nothing, or that cannot be described at all, disposes
+// of nothing — which makes every removal behave exactly as it did before this
+// existed. That is the conservative direction: a slot left behind is untidy,
+// while a slot closed on a harness that never claimed to have one is a verb
+// called on a plugin that does not implement it, on a path where the record has
+// already gone.
+func (a *Adapter) Disposes() bool {
+	description, err := a.describe()
+	return err == nil && description.Disposes
+}
+
+// Dispose asks the plugin to reclaim a conversation's slot.
+//
+// Present unconditionally, like Read, because the optional-interface probe
+// happens before describe has run. What gates it is Disposes above, which is
+// what harness.DisposerFor asks: a plugin that did not declare the capability
+// is never called here at all.
+func (a *Adapter) Dispose(ctx context.Context, req harness.DisposeRequest) error {
+	if _, err := a.describe(); err != nil {
+		return err
+	}
+	return a.client.Call(ctx, VerbDispose, req, nil)
 }
 
 // Enforceable reports what the plugin says it can control.

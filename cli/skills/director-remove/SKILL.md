@@ -1,6 +1,6 @@
 ---
 name: director-remove
-description: Drop engagements from a director's record with director remove - how to resolve which ones, naming several at once, when removing one strands a running agent, and what removal does not touch. Use when a spawn failed and left a row nothing can clear, when a batch of finished engagements is only noise in the status table, or when asked to remove, clear or forget engagements.
+description: Drop engagements from a director's record with director remove - how to resolve which ones, naming several at once, when removing one strands a running agent, what removal does not touch, and the harness slot it does reclaim. Use when a spawn failed and left a row nothing can clear, when a batch of finished engagements is only noise in the status table, or when asked to remove, clear or forget engagements.
 ---
 
 # Removing engagements
@@ -96,7 +96,11 @@ of the job.
 
 `--json` returns a list of the removals that happened, one object per
 engagement, whether you named one or ten. What failed is on stderr and in the
-exit code, not in that list.
+exit code, not in that list — except a slot that could not be closed, which is
+reported inside the removal that succeeded, as `disposal: "failed"`.
+
+One slot failing to close never stops the rest of the batch: every engagement
+named is removed and reclaimed independently.
 
 ## What removal does not do
 
@@ -113,6 +117,37 @@ It removes the director's memory of the work. It does not touch the work.
 Say this plainly when you report a removal, because "removed" invites the
 reading that the work was undone.
 
+## The one thing it does reclaim: the harness slot
+
+There is a single exception, and you have to know about it because it is
+visible: removal closes the slot the conversation was occupying in its harness
+— for herdr, the pane. That slot is not the agent's work either. director asked
+the harness for it, and nothing else ever gives it back, so rows cleared without
+it leave dead panes accumulating in somebody's session.
+
+It is closed only when there is real evidence nothing is left in it:
+
+- **A finished engagement** — `complete` or `abandoned`, observed fresh at the
+  moment of removal, not read off the row.
+- **`--stop`, and only if the stop actually succeeded.** A stop that failed
+  leaves the slot alone, because the agent may still be in it.
+
+It is never closed for `--force`, which exists to leave the agent running, and
+never for the conversation the director is itself running in. Harnesses that
+have no such slot are unaffected and nothing is reported for them.
+
+Removal is best-effort about this too. If the slot cannot be closed — the
+harness is down, the pane has gone, permission refused — **the removal still
+succeeds**, and says which slot was left behind. Do not re-run the command: the
+row has gone, so a second run reports that nothing matches. Close the pane in
+the harness yourself, or tell whoever asked that it is there.
+
+Each removal reports one of `closed`, `kept` or `failed`, in the line it prints
+and in `disposal` in `--json`. Nothing is reported when the harness has no slot.
+Repeat that word when you report a removal — "removed the row and closed its
+pane" is what happened, and "removed the row" alone is no longer the whole
+story.
+
 ## What to reach for instead
 
 - **The work is going the wrong way** — `director stop`. That ends the process
@@ -122,7 +157,10 @@ reading that the work was undone.
 - **You are done with the whole fleet** — `director retire`, which removes the
   director and its entire record. Never remove every engagement in a batch to
   approximate it: that leaves the director itself behind, still claimed, still
-  listed, holding nothing.
+  listed, holding nothing. Note that retire does *not* close harness slots —
+  it is routinely run from somewhere else to clear up other directors, whose
+  panes are not the invoker's to destroy — so a retired fleet's panes are still
+  there to close by hand.
 - **The row is wrong rather than unwanted** — `director note` it. Removal is
   not a way to make a status table say what you wish it said.
 

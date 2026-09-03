@@ -43,7 +43,15 @@ record, so the fixed command can simply be run again.
 
 Removing forgets the work; it does not undo it. Transcripts, logs, the
 workflow, and whatever the agent actually produced — branches, worktrees,
-files — are all untouched. It is not reversible.`,
+files — are all untouched. It is not reversible.
+
+The one thing it does reclaim is the slot the conversation was given in its
+harness — a herdr pane — because director asked for that slot and nothing else
+ever gives it back. It is closed only for an engagement the harness confirms
+has finished, or one --stop has just successfully ended, and never for --force
+or for the conversation this director is itself running in. Harnesses with no
+such slot are unaffected. A slot that will not close does not fail the removal:
+the row has already gone, so it is reported and left for you to close by hand.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d, err := open()
@@ -191,11 +199,33 @@ func reportRemoved(result *director.RemoveResult) {
 	if result.Stopped {
 		fmt.Printf("  stopped it first\n")
 	}
+	reportDisposal(result)
 	for _, ask := range result.Asks {
 		fmt.Printf("  dropped question %s\n", ask)
 	}
 	if result.Orphaned {
 		fmt.Printf("\n  It was still running and nothing can reach it now. The process is still there;\n")
 		fmt.Printf("  find it through %s itself.\n", result.Harness)
+	}
+}
+
+// reportDisposal says what became of the slot the conversation was occupying.
+//
+// Nothing is printed when there was no slot, which is what a harness that does
+// not declare the capability reports — removal there reads exactly as it did
+// before any of this existed.
+//
+// A failure is printed rather than returned, because the removal succeeded: the
+// row is gone and running the command again would only report that nothing
+// matches. What is left is a slot to close by hand, so the line says so.
+func reportDisposal(result *director.RemoveResult) {
+	switch result.Disposal {
+	case director.DisposalClosed:
+		fmt.Printf("  closed its %s slot\n", result.Harness)
+	case director.DisposalKept:
+		fmt.Printf("  left its %s slot alone: %s\n", result.Harness, result.DisposalReason)
+	case director.DisposalFailed:
+		fmt.Printf("  its %s slot could not be closed: %s\n", result.Harness, result.DisposalReason)
+		fmt.Printf("  The row is gone regardless, so there is nothing to run again. Close it in %s directly.\n", result.Harness)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/rwmyers/agent-director/harness"
@@ -159,6 +160,82 @@ func TestAdapterHosting(t *testing.T) {
 		}
 		if _, inside := adapter.Locate(); inside {
 			t.Error("Locate() on a broken plugin reported inside")
+		}
+	})
+}
+
+func TestAdapterDisposal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a plugin can declare it has a slot to reclaim", func(t *testing.T) {
+		t.Parallel()
+		// The requirement in one test: a harness nobody compiled into director
+		// gets its panes closed on removal, with no edit to director.
+		adapter := adapterFor(t, "paned", `echo '{"api_version":1,"name":"paned","version":"0.1.0",
+			"enforces":[],"disposes":true}'`)
+
+		disposer, ok := harness.DisposerFor(adapter)
+		if !ok {
+			t.Fatal("DisposerFor() declined a plugin that declared disposes")
+		}
+		if disposer == nil {
+			t.Fatal("DisposerFor() returned no disposer")
+		}
+	})
+
+	t.Run("a plugin that declares nothing is never asked", func(t *testing.T) {
+		t.Parallel()
+		// Silence has to mean "remove exactly as you did before", which is why
+		// the gate is the declaration and not the verb: asking would mean
+		// running dispose against a plugin that never implemented it.
+		adapter := adapterFor(t, "slotless", `echo '{"api_version":1,"name":"slotless","version":"0.1.0","enforces":[]}'`)
+
+		if _, ok := harness.DisposerFor(adapter); ok {
+			t.Error("DisposerFor() accepted a plugin that declared no slot")
+		}
+	})
+
+	t.Run("a plugin that cannot be described declares nothing", func(t *testing.T) {
+		t.Parallel()
+		adapter := adapterFor(t, "unreachable", `echo '{"api_version":99,"name":"unreachable"}'`)
+
+		if _, ok := harness.DisposerFor(adapter); ok {
+			t.Error("DisposerFor() accepted a plugin that could not be described")
+		}
+	})
+
+	t.Run("dispose reaches the plugin with the ref", func(t *testing.T) {
+		t.Parallel()
+		// The verb is the only argument and the request arrives on stdin, so
+		// the plugin can prove both by writing what it was given.
+		dir := t.TempDir()
+		record := filepath.Join(dir, "called")
+		path := filepath.Join(dir, plugin.Prefix+"recording")
+		script := "#!/bin/sh\n" +
+			"body=$(cat)\n" +
+			"if [ \"$1\" = describe ]; then\n" +
+			"  echo '{\"api_version\":1,\"name\":\"recording\",\"version\":\"0.1.0\",\"enforces\":[],\"disposes\":true}'\n" +
+			"  exit 0\n" +
+			"fi\n" +
+			"printf '%s %s' \"$1\" \"$body\" >" + record + "\n" +
+			"echo '{}'\n"
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil { // #nosec G306 -- a test fixture that must be executable
+			t.Fatal(err)
+		}
+		adapter := &Adapter{client: plugin.New(plugin.Found{Name: "recording", Path: path})}
+
+		if err := adapter.Dispose(t.Context(), harness.DisposeRequest{Ref: "p7"}); err != nil {
+			t.Fatalf("Dispose() = %v, want no error", err)
+		}
+		got, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatalf("reading what the plugin was called with = %v", err)
+		}
+		if !strings.HasPrefix(string(got), VerbDispose+" ") {
+			t.Errorf("plugin was called as %q, want the %s verb", got, VerbDispose)
+		}
+		if !strings.Contains(string(got), `"Ref":"p7"`) && !strings.Contains(string(got), `"ref":"p7"`) {
+			t.Errorf("plugin was sent %q, want the ref in the request", got)
 		}
 	})
 }

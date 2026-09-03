@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -29,7 +30,10 @@ type fleetAdapter struct {
 	fakeInstaller
 	name string
 	// live holds the refs the harness should report as still working.
-	live    map[string]bool
+	live map[string]bool
+	// stopErr makes every stop fail, which is a different thing from a stop
+	// that worked: after it the agent may still be running.
+	stopErr error
 	stopped []string
 }
 
@@ -44,6 +48,9 @@ func (a *fleetAdapter) Spawn(_ context.Context, req harness.SpawnRequest) (harne
 func (a *fleetAdapter) Send(context.Context, harness.SendRequest) error { return nil }
 
 func (a *fleetAdapter) Stop(_ context.Context, req harness.StopRequest) error {
+	if a.stopErr != nil {
+		return a.stopErr
+	}
 	a.stopped = append(a.stopped, req.Ref)
 	delete(a.live, req.Ref)
 	return nil
@@ -379,5 +386,260 @@ func TestRemoveOneEngagementReportsItTheSameWayAsBefore(t *testing.T) {
 	want := "removed " + id + "  the one to forget  (" + string(health) + ", -)\n"
 	if out != want {
 		t.Errorf("remove said %q, want %q", out, want)
+	}
+}
+
+// panedAdapter is a fleet harness that also has a slot to give back, so the
+// removal path can be driven end to end without going anywhere near herdr.
+//
+// It is a separate harness from fleetAdapter rather than a flag on it, because
+// the tests above assert what a removal on a harness with no slot prints, and
+// that has to keep meaning what it means.
+type panedAdapter struct {
+	*fleetAdapter
+	// failFor names the slots this harness refuses to close, standing in for a
+	// pane that has gone or a server that has stopped.
+	failFor map[string]bool
+	// seat is the conversation this harness reports the running process as
+	// sitting in, which is how a director inside a pane finds its own.
+	seat     string
+	disposed []string
+}
+
+func (a *panedAdapter) Locate() (string, bool) {
+	if a.seat == "" {
+		return "", false
+	}
+	return a.seat, true
+}
+
+func (a *panedAdapter) Disposes() bool { return true }
+
+func (a *panedAdapter) Dispose(_ context.Context, req harness.DisposeRequest) error {
+	if a.failFor[req.Ref] {
+		return errors.New("herdr server is not running")
+	}
+	a.disposed = append(a.disposed, req.Ref)
+	return nil
+}
+
+// panedRoot establishes a scratch root spawning onto a harness with slots.
+//
+// Autodetection is turned off in the written config for the same reason
+// fleetRoot turns it off, and it matters more here: this suite exercises code
+// whose whole purpose is closing panes, and a run that picked up the live herdr
+// session would be closing somebody's real ones.
+func panedRoot(t *testing.T) (string, *panedAdapter) {
+	t.Helper()
+	scratchEnv(t)
+	root := t.TempDir()
+	adapter := &panedAdapter{
+		fleetAdapter: &fleetAdapter{name: "fake-paned", live: map[string]bool{}},
+		failFor:      map[string]bool{},
+	}
+	harness.Register(adapter)
+	establishRoot(t, root, adapter.name)
+
+	config := filepath.Join(root, "director.conf")
+	body, err := os.ReadFile(config)
+	if err != nil {
+		t.Fatalf("reading %s = %v", config, err)
+	}
+	if err := os.WriteFile(config, append(body, "\nherdr_autodetect = false\n"...), 0o600); err != nil {
+		t.Fatalf("writing %s = %v", config, err)
+	}
+	return root, adapter
+}
+
+func TestRemoveReclaimsEverySlotInTheBatch(t *testing.T) {
+	root, adapter := panedRoot(t)
+	first := spawnEngagement(t, root, "the first to forget")
+	second := spawnEngagement(t, root, "the second to forget")
+
+	stop := captureStdout(t)
+	err := runDirector(t, "remove", "--config", root, first, second)
+	out := stop()
+	if err != nil {
+		t.Fatalf("remove = %v, want no error", err)
+	}
+
+	want := []string{"ref-" + first, "ref-" + second}
+	if len(adapter.disposed) != 2 {
+		t.Fatalf("remove reclaimed %v, want %v", adapter.disposed, want)
+	}
+	for _, ref := range want {
+		if !slices.Contains(adapter.disposed, ref) {
+			t.Errorf("remove reclaimed %v, want it to include %s", adapter.disposed, ref)
+		}
+	}
+	if got := strings.Count(out, "closed its fake-paned slot"); got != 2 {
+		t.Errorf("remove said %q, want both slots reported closed", out)
+	}
+}
+
+func TestRemoveKeepsGoingWhenOneSlotWillNotClose(t *testing.T) {
+	// One slot that will not close must not silently skip the rest, and must
+	// not fail the removal either: the rows have gone and running the command
+	// again would only report that nothing matches.
+	root, adapter := panedRoot(t)
+	stubborn := spawnEngagement(t, root, "the one whose pane is gone")
+	ordinary := spawnEngagement(t, root, "the ordinary one")
+	adapter.failFor["ref-"+stubborn] = true
+
+	stop := captureStdout(t)
+	err := runDirector(t, "remove", "--config", root, stubborn, ordinary)
+	out := stop()
+	if err != nil {
+		t.Fatalf("remove = %v, want a slot that would not close not to fail the removal", err)
+	}
+
+	if remaining := fleet(t, root); len(remaining) != 0 {
+		t.Errorf("state holds %d engagements, want both rows removed", len(remaining))
+	}
+	if len(adapter.disposed) != 1 || adapter.disposed[0] != "ref-"+ordinary {
+		t.Errorf("remove reclaimed %v, want the other slot still given back", adapter.disposed)
+	}
+	if !strings.Contains(out, "could not be closed") || !strings.Contains(out, "herdr server is not running") {
+		t.Errorf("remove said %q, want it to report the slot it left behind and why", out)
+	}
+	if !strings.Contains(out, "closed its fake-paned slot") {
+		t.Errorf("remove said %q, want the slot that did close reported too", out)
+	}
+}
+
+func TestRemoveJSONSaysWhatHappenedToEachSlot(t *testing.T) {
+	root, adapter := panedRoot(t)
+	closed := spawnEngagement(t, root, "the closed one")
+	failed := spawnEngagement(t, root, "the stuck one")
+	adapter.failFor["ref-"+failed] = true
+
+	stop := captureStdout(t)
+	err := runDirector(t, "remove", "--config", root, "--json", closed, failed)
+	out := stop()
+	if err != nil {
+		t.Fatalf("remove = %v, want no error", err)
+	}
+
+	var removed []director.RemoveResult
+	if err := json.Unmarshal([]byte(out), &removed); err != nil {
+		t.Fatalf("parsing %q = %v, want a list of removals", out, err)
+	}
+	got := map[string]director.RemoveResult{}
+	for _, result := range removed {
+		got[result.EngagementID] = result
+	}
+	if got[closed].Disposal != director.DisposalClosed {
+		t.Errorf("remove --json reported %q for the closed one, want %q",
+			got[closed].Disposal, director.DisposalClosed)
+	}
+	if got[failed].Disposal != director.DisposalFailed {
+		t.Errorf("remove --json reported %q for the stuck one, want %q",
+			got[failed].Disposal, director.DisposalFailed)
+	}
+	if !strings.Contains(got[failed].DisposalReason, "herdr server is not running") {
+		t.Errorf("remove --json gave the reason %q, want what the harness said",
+			got[failed].DisposalReason)
+	}
+}
+
+func TestRemoveForceLeavesTheSlotAloneAcrossTheBatch(t *testing.T) {
+	// --force forgets an engagement while deliberately leaving its agent
+	// running and unreachable. Closing the pane would kill the thing the flag
+	// exists to preserve, and the flag applies to everything named.
+	root, adapter := panedRoot(t)
+	running := spawnEngagement(t, root, "the running one")
+	finished := spawnEngagement(t, root, "the finished one")
+	adapter.live["ref-"+running] = true
+
+	stop := captureStdout(t)
+	err := runDirector(t, "remove", "--config", root, "--json", "--force", running, finished)
+	out := stop()
+	if err != nil {
+		t.Fatalf("remove = %v, want no error", err)
+	}
+
+	if len(adapter.disposed) != 0 {
+		t.Fatalf("--force closed %v, want every slot left alone", adapter.disposed)
+	}
+	var removed []director.RemoveResult
+	if err := json.Unmarshal([]byte(out), &removed); err != nil {
+		t.Fatalf("parsing %q = %v, want a list of removals", out, err)
+	}
+	if len(removed) != 2 {
+		t.Fatalf("remove --json described %d removals, want 2", len(removed))
+	}
+	for _, result := range removed {
+		if result.Disposal != director.DisposalKept {
+			t.Errorf("remove --json reported %q for %s, want %q",
+				result.Disposal, result.EngagementID, director.DisposalKept)
+		}
+		if !strings.Contains(result.DisposalReason, "--force") {
+			t.Errorf("remove --json gave the reason %q, want it to name --force", result.DisposalReason)
+		}
+	}
+}
+
+func TestRemoveStopClosesTheSlotOnlyWhenTheStopSucceeded(t *testing.T) {
+	root, adapter := panedRoot(t)
+	running := spawnEngagement(t, root, "the running one")
+	adapter.live["ref-"+running] = true
+
+	if err := runDirector(t, "remove", "--config", root, "--stop", running); err != nil {
+		t.Fatalf("remove = %v, want no error", err)
+	}
+	if len(adapter.stopped) != 1 {
+		t.Fatalf("remove stopped %v, want the engagement ended first", adapter.stopped)
+	}
+	if len(adapter.disposed) != 1 || adapter.disposed[0] != "ref-"+running {
+		t.Errorf("remove reclaimed %v, want the slot given back after a successful stop", adapter.disposed)
+	}
+}
+
+func TestRemoveStopLeavesTheSlotAloneWhenTheStopFailed(t *testing.T) {
+	// The agent may still be alive in there, and closing the pane would destroy
+	// the work the failed stop did not end.
+	root, adapter := panedRoot(t)
+	running := spawnEngagement(t, root, "the unstoppable one")
+	adapter.live["ref-"+running] = true
+	adapter.stopErr = errors.New("the harness would not end it")
+
+	stop := captureStdout(t)
+	if err := runDirector(t, "remove", "--config", root, "--stop", running); err != nil {
+		t.Fatalf("remove = %v, want no error", err)
+	}
+	out := stop()
+
+	if len(adapter.disposed) != 0 {
+		t.Fatalf("a failed stop closed %v, want the slot left alone", adapter.disposed)
+	}
+	if !strings.Contains(out, "stop did not succeed") {
+		t.Errorf("remove said %q, want it to say why the slot was left alone", out)
+	}
+}
+
+func TestRemoveNeverClosesTheDirectorsOwnSlot(t *testing.T) {
+	// A director very often runs inside the harness it dispatches to. A removal
+	// that reached its own seat would kill the session issuing the command.
+	root, adapter := panedRoot(t)
+	id := spawnEngagement(t, root, "the seat this director occupies")
+
+	// The harness now reports this process as sitting in exactly the pane the
+	// engagement occupies, which is the arrangement the guard exists for.
+	adapter.seat = "ref-" + id
+
+	stop := captureStdout(t)
+	if err := runDirector(t, "remove", "--config", root, id); err != nil {
+		t.Fatalf("remove = %v, want no error", err)
+	}
+	out := stop()
+
+	if len(adapter.disposed) != 0 {
+		t.Fatalf("remove closed the director's own slot: %v", adapter.disposed)
+	}
+	if !strings.Contains(out, "director itself") {
+		t.Errorf("remove said %q, want it to say why the slot was left alone", out)
+	}
+	if remaining := fleet(t, root); len(remaining) != 0 {
+		t.Errorf("state holds %d engagements, want the row removed regardless", len(remaining))
 	}
 }
