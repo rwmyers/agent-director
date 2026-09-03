@@ -108,7 +108,7 @@ func TestReportWakesOnlyWhenThereIsNews(t *testing.T) {
 		d, adapter := wakeable(t, now)
 		engagement := spawnOne(t, d)
 
-		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "reading", "halfway"); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, ReportOptions{Progress: "reading", Message: "halfway"}); err != nil {
 			t.Fatalf("Report() = %v, want no error", err)
 		}
 		if sent := wakes(adapter); len(sent) != 0 {
@@ -124,7 +124,7 @@ func TestReportWakesOnlyWhenThereIsNews(t *testing.T) {
 		d, adapter := wakeable(t, now)
 		engagement := spawnOne(t, d)
 
-		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "delivered", "done"); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, ReportOptions{Progress: "delivered", Message: "done"}); err != nil {
 			t.Fatalf("Report() = %v, want no error", err)
 		}
 		if sent := wakes(adapter); len(sent) != 1 {
@@ -244,7 +244,7 @@ func TestNotifyGuards(t *testing.T) {
 		engagement := spawnOne(t, d)
 		adapter.sendErr = errors.New("the pane is gone")
 
-		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, "delivered", "done"); err != nil {
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, ReportOptions{Progress: "delivered", Message: "done"}); err != nil {
 			t.Fatalf("Report() = %v, want no error despite the failed wake", err)
 		}
 		// And it is recorded anyway, so a broken address does not fill the

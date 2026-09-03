@@ -122,7 +122,7 @@ Pass a director id to attach to a specific one, or --new to force a fresh one.`,
 				engagements, err := d.Status(cmd.Context())
 				if err == nil && len(engagements) > 0 {
 					fmt.Printf("You have inherited %d engagement(s). Deal with anything waiting before starting new work:\n\n", len(engagements))
-					printEngagements(engagements)
+					printEngagements(engagements, d.OpenAsks())
 				}
 			}
 			return nil

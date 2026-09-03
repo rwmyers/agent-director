@@ -660,6 +660,12 @@ func renderReportingContract(task Task) string {
 		out.WriteString("The director cannot otherwise tell a finished engagement from one that stopped early.\n\n")
 	}
 
+	out.WriteString("When your work lands somewhere a person could go and look — a branch, a pull request, a path, a document — say where, on the same command:\n\n")
+	out.WriteString("    director report --progress <value> --materials <branch> --materials <url>\n\n")
+	out.WriteString("Repeat --materials once per item. It replaces the whole set, so name everything that is current, ")
+	out.WriteString("and leave the flag off entirely when you have nothing new to say about where your work is. ")
+	out.WriteString("Nothing else tells the director where to look.\n\n")
+
 	out.WriteString("If you need a decision only a human or the director can make, ask instead of guessing:\n\n")
 	out.WriteString("    ANSWER=$(director ask \"<your question>\" --wait)\n\n")
 	out.WriteString("This blocks until you are answered, and marks you as blocked so somebody knows to look. ")
@@ -728,6 +734,7 @@ func (d *Director) Status(ctx context.Context) ([]*Engagement, error) {
 // fleet of confused agents, and the director would wait on them forever.
 func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 	engagement.PendingAsk = d.State.PendingAskFor(engagement.ID)
+	engagement.OpenAsks = d.State.OpenAskIDsFor(engagement.ID)
 
 	if engagement.Ref == "" {
 		engagement.Lifecycle = harness.LifecycleUnknown
@@ -800,6 +807,53 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 	})
 }
 
+// ReportOptions is what an agent says about itself in one call.
+//
+// Materials is the distinguished field: nil means the agent said nothing about
+// where its work is and whatever was recorded stands, while a non-nil slice —
+// including an empty one — is the agent stating its current set and replaces
+// what was there. That asymmetry is the whole safety property. An ordinary
+// progress report cannot silently erase the branch and the pull request the
+// agent named an hour ago, and a list that has gone stale can still be
+// corrected, which an append-only field could never do.
+type ReportOptions struct {
+	Progress  string
+	Message   string
+	Materials []string
+}
+
+// normaliseMaterials cleans up what an agent offered as its materials.
+//
+// Blank entries are dropped rather than refused, because a shell loop that
+// builds the flags will hand over an empty one sooner or later and failing the
+// whole report over it would cost the progress value too. A newline is refused,
+// because a material is a thing to go and look at — a branch, a URL, a path —
+// and a multi-line one is a paragraph that would wreck the one column this is
+// rendered in. Repeats are dropped so an agent that names the same branch twice
+// does not widen the column for nothing.
+func normaliseMaterials(materials []string) ([]string, error) {
+	if materials == nil {
+		return nil, nil
+	}
+	cleaned := []string{}
+	seen := map[string]bool{}
+	for _, material := range materials {
+		trimmed := strings.TrimSpace(material)
+		if trimmed == "" {
+			continue
+		}
+		if strings.ContainsAny(trimmed, "\n\r") {
+			return nil, fmt.Errorf("a material must be one line: %q spans several", trimmed)
+		}
+		if seen[trimmed] {
+			continue
+		}
+		seen[trimmed] = true
+		cleaned = append(cleaned, trimmed)
+	}
+	return cleaned, nil
+}
+
 // Report records what an agent says about itself.
 //
 // The token is checked against the named engagement, so an agent can only speak
@@ -812,9 +866,14 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 // happen leaves exactly the behaviour there was before — the director reads it
 // on its next turn. So the wake's error is discarded here rather than returned,
 // because an agent whose report succeeded must not be told its report failed.
-func (d *Director) Report(ctx context.Context, engagementID, token, progress, message string) (*Engagement, error) {
+func (d *Director) Report(ctx context.Context, engagementID, token string, report ReportOptions) (*Engagement, error) {
+	materials, err := normaliseMaterials(report.Materials)
+	if err != nil {
+		return nil, err
+	}
+
 	var updated *Engagement
-	err := d.mutate(func(state *State) error {
+	err = d.mutate(func(state *State) error {
 		engagement, err := authenticate(state, engagementID, token)
 		if err != nil {
 			return err
@@ -823,15 +882,18 @@ func (d *Director) Report(ctx context.Context, engagementID, token, progress, me
 		if err != nil {
 			return err
 		}
-		if progress != "" {
-			if !task.ValidProgress(progress) {
+		if report.Progress != "" {
+			if !task.ValidProgress(report.Progress) {
 				return fmt.Errorf("task %q has no progress value %q (valid: %s)",
-					task.Name, progress, strings.Join(task.Progress, ", "))
+					task.Name, report.Progress, strings.Join(task.Progress, ", "))
 			}
-			engagement.Progress = progress
+			engagement.Progress = report.Progress
 		}
-		if message != "" {
-			engagement.LastMessage = message
+		if report.Message != "" {
+			engagement.LastMessage = report.Message
+		}
+		if report.Materials != nil {
+			engagement.Materials = materials
 		}
 		engagement.LastReportAt = d.now()
 		// A report is a sign of life, so it clears any previous nudge: the
@@ -930,6 +992,32 @@ func (d *Director) AwaitAnswer(ctx context.Context, askID string, poll time.Dura
 		case <-time.After(poll):
 		}
 	}
+}
+
+// OpenAsks returns the questions currently waiting on an answer, oldest first.
+func (d *Director) OpenAsks() []*Ask { return d.State.OpenAsks() }
+
+// Asks returns the named questions, in the order they were named.
+//
+// Identifiers that name nothing do not cost the ones that do: the questions
+// that were found come back alongside an error naming the ones that were not.
+// A director that mistyped one of three asks still gets to read the other two,
+// which is the difference between a typo and a wasted turn.
+func (d *Director) Asks(ids []string) ([]*Ask, error) {
+	found := make([]*Ask, 0, len(ids))
+	var missing []string
+	for _, id := range ids {
+		ask, ok := d.State.Asks[id]
+		if !ok {
+			missing = append(missing, id)
+			continue
+		}
+		found = append(found, ask)
+	}
+	if len(missing) > 0 {
+		return found, fmt.Errorf("%w: no question %s", ErrNotFound, strings.Join(missing, ", "))
+	}
+	return found, nil
 }
 
 // Send pushes text into a running engagement, through its harness.

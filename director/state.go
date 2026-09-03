@@ -46,13 +46,31 @@ type Engagement struct {
 	Note   string `json:"note,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
 
+	// Materials is where this engagement's work can be found — a branch, a
+	// pull request, a path, a document. The engagement is its only source:
+	// it knows where its work landed, and a director reading it out of prose
+	// is guessing. Replaced wholesale by `director report --materials`, so it
+	// always names the current set rather than everything ever mentioned.
+	Materials []string `json:"materials,omitempty"`
+
 	// Token is the engagement's callback secret. It is never rendered: JSON
 	// output of a fleet would otherwise hand every agent's credentials to
 	// whatever is reading, including another agent.
 	Token string `json:"-"`
 
-	Detail     map[string]string `json:"detail,omitempty"`
-	PendingAsk *Ask              `json:"pending_ask,omitempty"`
+	Detail map[string]string `json:"detail,omitempty"`
+
+	// PendingAsk is the oldest question this engagement is waiting on. It is
+	// what health reads to decide "blocked", and it is deliberately not
+	// rendered: a question is as long as the agent made it, `status` is the
+	// command a director is told to run every turn, and an unanswered question
+	// reproduces its whole text on every one of those turns until somebody
+	// answers. OpenAsks carries the identifiers instead; `director status
+	// asks` fetches the text, once, when it is actually wanted.
+	PendingAsk *Ask `json:"-"`
+	// OpenAsks lists the identifiers of this engagement's unanswered
+	// questions, oldest first.
+	OpenAsks []string `json:"open_asks,omitempty"`
 
 	// LastMessage is whatever the agent last said alongside a report, kept so
 	// `status` can show something human without a transcript read.
@@ -137,6 +155,47 @@ func (s *State) PendingAskFor(engagementID string) *Ask {
 		}
 	}
 	return oldest
+}
+
+// OpenAsks returns every unanswered question, oldest first.
+func (s *State) OpenAsks() []*Ask {
+	open := make([]*Ask, 0, len(s.Asks))
+	for _, ask := range s.Asks {
+		if !ask.Answered() {
+			open = append(open, ask)
+		}
+	}
+	sortAsks(open)
+	return open
+}
+
+// OpenAskIDsFor returns the identifiers of one engagement's unanswered
+// questions, oldest first.
+func (s *State) OpenAskIDsFor(engagementID string) []string {
+	var open []*Ask
+	for _, ask := range s.Asks {
+		if ask.Engagement == engagementID && !ask.Answered() {
+			open = append(open, ask)
+		}
+	}
+	sortAsks(open)
+	ids := make([]string, 0, len(open))
+	for _, ask := range open {
+		ids = append(ids, ask.ID)
+	}
+	return ids
+}
+
+// sortAsks puts questions in the order they were asked, breaking ties on the
+// identifier so that two questions asked in the same clock tick still come back
+// in a stable order rather than whatever the map iterated.
+func sortAsks(asks []*Ask) {
+	sort.Slice(asks, func(i, j int) bool {
+		if !asks[i].AskedAt.Equal(asks[j].AskedAt) {
+			return asks[i].AskedAt.Before(asks[j].AskedAt)
+		}
+		return asks[i].ID < asks[j].ID
+	})
 }
 
 // StateDir is where a root keeps its per-director state files.
@@ -293,6 +352,9 @@ func LoadState(path string) (*State, error) {
 				engagement.Detail[key] = entry.Value
 			}
 		}
+		// A repeated key is how this format stores a list, so the order the
+		// engagement reported its materials in is the order they come back.
+		engagement.Materials = section.Entries.All("material")
 		state.Engagements[engagement.ID] = engagement
 	}
 
@@ -357,6 +419,9 @@ func (s *State) Save() error {
 		set("cursor", engagement.Cursor)
 		set("token", engagement.Token)
 		set("last_message", engagement.LastMessage)
+		for _, material := range engagement.Materials {
+			entries = append(entries, conf.Entry{Key: "material", Value: material})
+		}
 
 		detailKeys := make([]string, 0, len(engagement.Detail))
 		for key := range engagement.Detail {

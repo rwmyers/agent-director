@@ -103,7 +103,13 @@ HEALTH is the column to act on:
 LIFECYCLE is about the process, not the work. "done" means no process is
 attached and the conversation can be resumed — it does NOT mean the work
 finished. An agent whose terminal was closed is done. Only progress reaching
-its terminal value means finished, which is what "complete" reports.`,
+its terminal value means finished, which is what "complete" reports.
+
+Open questions are listed by identifier, not reproduced. Run "director status
+asks <id>" for the text of one.
+
+MATERIALS is where an engagement said its work can be found, and is shortened
+to fit the column. "--json" carries the whole list.`,
 		Args: cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d, err := open()
@@ -143,37 +149,197 @@ its terminal value means finished, which is what "complete" reports.`,
 				return nil
 			}
 
-			printEngagements(engagements)
+			printEngagements(engagements, d.OpenAsks())
 			return nil
 		},
 	}
 	cmd.Flags().BoolVar(&unhealthy, "unhealthy", false, "show only engagements needing action")
+	cmd.AddCommand(newStatusAsksCmd())
 	return cmd
+}
+
+// newStatusAsksCmd is the other half of not printing questions in the table.
+//
+// Naming asks gets you their text; naming none gets you the list of names. That
+// is the whole rule, and the second half of it is the interesting decision.
+// Listing every open question in full is exactly the behaviour `status` was
+// changed to stop doing — five blocked agents holding large plans would
+// reproduce all five — so it cannot be the default for a command whose name is
+// this easy to type by accident. Refusing outright was the alternative and is
+// worse: a director that has lost the identifiers, or that ran this to find out
+// what the subcommand does, would get an error where the answer it wanted is
+// one short line per question.
+func newStatusAsksCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "asks [ask ...]",
+		Short: "Show the full text of questions engagements are waiting on",
+		Long: `The text "director status" deliberately leaves out.
+
+Name the questions you want and their full text is printed. Name none and you
+get the open ones by identifier only — the same compact index "director status"
+prints, without the fleet table around it — because a command that dumped every
+open question would recreate the problem that took them out of the table.
+
+An identifier that names nothing does not cost the ones that do: the questions
+found are printed, and the ones that were not are named in the error.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			d, err := open()
+			if err != nil {
+				return err
+			}
+
+			if len(args) == 0 {
+				pending := d.OpenAsks()
+				if opts.asJSON {
+					ids := make([]string, 0, len(pending))
+					for _, ask := range pending {
+						ids = append(ids, ask.ID)
+					}
+					return emit(ids)
+				}
+				if len(pending) == 0 {
+					fmt.Println("no open questions")
+					return nil
+				}
+				printAskIndex(pending)
+				return nil
+			}
+
+			asks, lookupErr := d.Asks(args)
+			if opts.asJSON {
+				if lookupErr != nil {
+					return lookupErr
+				}
+				return emit(asks)
+			}
+			printAsks(asks)
+			return lookupErr
+		},
+	}
 }
 
 // printEngagements renders the fleet. Shared with attach, which shows the same
 // table when a conversation inherits work — the same facts should not look
 // different depending on which command surfaced them.
-func printEngagements(engagements []*director.Engagement) {
+func printEngagements(engagements []*director.Engagement, asks []*director.Ask) {
 	now := time.Now()
 	out := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-	_ = writeRow(out, "ID\tHEALTH\tLIFECYCLE\tPROGRESS\tSILENT\tTITLE\n")
+	_ = writeRow(out, "ID\tHEALTH\tLIFECYCLE\tPROGRESS\tSILENT\tMATERIALS\tTITLE\n")
 	for _, engagement := range engagements {
 		progress := engagement.Progress
 		if progress == "" {
 			progress = "-"
 		}
-		_ = writeRow(out, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		_ = writeRow(out, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			engagement.ID, engagement.Health, engagement.Lifecycle,
-			progress, short(engagement.SilentFor(now)), engagement.Title)
+			progress, short(engagement.SilentFor(now)),
+			materialsCell(engagement.Materials), engagement.Title)
 	}
 	_ = out.Flush()
 
+	printOpenAsks(asks, engagements)
+}
+
+// materialWidth is how much of a material one table cell may spend.
+//
+// Materials are branches, pull request URLs and paths, and a URL alone can run
+// past eighty columns. The table is what a director reads every turn, so the
+// cell is capped and the rest lives in --json, which is asked for deliberately
+// and once.
+const materialWidth = 28
+
+// materialsCell renders an engagement's materials short enough to sit in a
+// column: the first one, clipped, and a count of the others.
+//
+// Nothing at all when there are none — not a dash and not "0". An engagement
+// that has reported no materials has to look like an engagement that has
+// reported no materials, or a director cannot tell "nothing yet" from
+// "something".
+func materialsCell(materials []string) string {
+	if len(materials) == 0 {
+		return ""
+	}
+	cell := clip(materials[0], materialWidth)
+	if rest := len(materials) - 1; rest > 0 {
+		cell += fmt.Sprintf(" +%d", rest)
+	}
+	return cell
+}
+
+// printOpenAsks says what is waiting, by identifier, under the fleet table.
+//
+// It reproduces no question text. What it has to preserve from the output it
+// replaced is both of that output's jobs: that something is waiting at all, and
+// the exact command that resolves it. So the count leads, every identifier is
+// listed against the engagement that raised it, and the commands to read and to
+// answer follow — with the real identifier substituted when there is only one,
+// which is the ordinary case.
+func printOpenAsks(asks []*director.Ask, engagements []*director.Engagement) {
+	shown := make(map[string]bool, len(engagements))
 	for _, engagement := range engagements {
-		if engagement.PendingAsk != nil {
-			fmt.Printf("\n%s asked: %s\n  answer with: director answer %s \"...\"\n",
-				engagement.ID, engagement.PendingAsk.Question, engagement.PendingAsk.ID)
+		shown[engagement.ID] = true
+	}
+	var open []*director.Ask
+	for _, ask := range asks {
+		if !ask.Answered() && shown[ask.Engagement] {
+			open = append(open, ask)
 		}
+	}
+	if len(open) == 0 {
+		return
+	}
+
+	fmt.Println()
+	printAskIndex(open)
+}
+
+// printAskIndex is the compact listing itself: one bounded line per question
+// saying which it is, whose it is, and how long it has been sitting there, then
+// the two commands that act on it.
+//
+// The read command names every identifier, because reading what is waiting is
+// the thing a director does next and the list is short. The answer command
+// takes a placeholder unless there is exactly one question, since a different
+// answer goes to each — and one is the ordinary case, where the exact command
+// is what the output this replaced always gave.
+func printAskIndex(open []*director.Ask) {
+	if len(open) == 1 {
+		fmt.Println("1 open question, text not shown:")
+	} else {
+		fmt.Printf("%d open questions, text not shown:\n", len(open))
+	}
+
+	now := time.Now()
+	out := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+	ids := make([]string, 0, len(open))
+	for _, ask := range open {
+		_ = writeRow(out, "  %s\t%s\twaiting %s\n", ask.ID, ask.Engagement, short(now.Sub(ask.AskedAt)))
+		ids = append(ids, ask.ID)
+	}
+	_ = out.Flush()
+
+	target := "<ask>"
+	if len(ids) == 1 {
+		target = ids[0]
+	}
+	fmt.Printf("\n  read:    director status asks %s\n", strings.Join(ids, " "))
+	fmt.Printf("  answer:  director answer %s \"...\"\n", target)
+}
+
+// printAsks prints questions in full — the one place that does.
+func printAsks(asks []*director.Ask) {
+	now := time.Now()
+	for i, ask := range asks {
+		if i > 0 {
+			fmt.Println()
+		}
+		fmt.Printf("%s  %s  asked %s ago\n\n", ask.ID, ask.Engagement, short(now.Sub(ask.AskedAt)))
+		fmt.Printf("%s\n\n", ask.Question)
+		if ask.Answered() {
+			fmt.Printf("  answered %s ago: %s\n", short(now.Sub(ask.AnsweredAt)), ask.Answer)
+			continue
+		}
+		fmt.Printf("  answer with: director answer %s \"...\"\n", ask.ID)
 	}
 }
 
@@ -331,6 +497,7 @@ func engagementFromEnv() (id, token string, err error) {
 
 func newReportCmd() *cobra.Command {
 	var progress, message string
+	var materials []string
 
 	cmd := &cobra.Command{
 		Use:   "report",
@@ -338,7 +505,16 @@ func newReportCmd() *cobra.Command {
 		Long: `For an agent running as an engagement, not for a director.
 
 Your director cannot see your conversation. This is the only thing it knows
-about you, and silence is what makes it think you are stuck.`,
+about you, and silence is what makes it think you are stuck.
+
+--materials is where your work can be found: a branch, a pull request, a path,
+a document. Repeat the flag once per item. You are the only source for it — a
+director reading it out of your prose is guessing — and nothing else in the
+system records where your work landed.
+
+Giving --materials replaces the whole set with what you named, so name
+everything that is still current. Leaving it off changes nothing, so an
+ordinary progress report never loses what you recorded before.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			id, token, err := engagementFromEnv()
@@ -349,7 +525,11 @@ about you, and silence is what makes it think you are stuck.`,
 			if err != nil {
 				return err
 			}
-			engagement, err := d.Report(cmd.Context(), id, token, progress, message)
+			engagement, err := d.Report(cmd.Context(), id, token, director.ReportOptions{
+				Progress:  progress,
+				Message:   message,
+				Materials: materials,
+			})
 			if err != nil {
 				return err
 			}
@@ -362,6 +542,8 @@ about you, and silence is what makes it think you are stuck.`,
 	}
 	cmd.Flags().StringVar(&progress, "progress", "", "progress value from your task's vocabulary ($DIRECTOR_PROGRESS)")
 	cmd.Flags().StringVar(&message, "message", "", "one line on what you are doing")
+	cmd.Flags().StringArrayVar(&materials, "materials", nil,
+		"where your work can be found — a branch, a PR, a path; repeat per item, replaces the set")
 	return cmd
 }
 
