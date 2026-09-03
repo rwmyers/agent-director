@@ -650,11 +650,18 @@ func newDirectorsCmd() *cobra.Command {
 func newHarnessesCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "harnesses",
-		Short: "List the agent harnesses this machine can drive",
+		Short: "List the agent harnesses director can drive",
 		Long: `Run this once before spawning anything.
 
 Spawning into a harness that is not actually available is how a director finds
-out too late that its server is not running or its binary is not installed.`,
+out too late that its server is not running or its binary is not installed.
+
+This is what can be driven, which is not the same set as what skills can be
+installed for — driving needs a working protocol, installing needs somewhere to
+put a skill. A harness marked DISPLAY shows another harness's conversation
+rather than being one, so it reads no skills of its own: install for the agent
+you run inside it, and ` + "`director install`" + ` names the harnesses that are
+targets.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			type row struct {
@@ -662,6 +669,11 @@ out too late that its server is not running or its binary is not installed.`,
 				Enforceable []string `json:"enforceable"`
 				Read        bool     `json:"read"`
 				Resume      bool     `json:"resume"`
+				// Display is the adapter's own declaration that it shows
+				// somebody else's conversation. It is reported here because it
+				// is what explains an entry in this table that `director
+				// install` will not accept.
+				Display bool `json:"display"`
 			}
 			var rows []row
 			for _, name := range harness.Names() {
@@ -674,17 +686,17 @@ out too late that its server is not running or its binary is not installed.`,
 				for _, capability := range adapter.Enforceable() {
 					enforceable = append(enforceable, string(capability))
 				}
-				rows = append(rows, row{name, enforceable, caps.Read, caps.Resume})
+				rows = append(rows, row{name, enforceable, caps.Read, caps.Resume, harness.Displays(adapter)})
 			}
 			if opts.asJSON {
 				return emit(rows)
 			}
 			out := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
-			if err := writeRow(out, "HARNESS\tREAD\tRESUME\tCAN CONTROL"+"\n"); err != nil {
+			if err := writeRow(out, "HARNESS\tREAD\tRESUME\tDISPLAY\tCAN CONTROL"+"\n"); err != nil {
 				return err
 			}
 			for _, r := range rows {
-				_ = writeRow(out, "%s\t%t\t%t\t%s\n", r.Name, r.Read, r.Resume, strings.Join(r.Enforceable, ","))
+				_ = writeRow(out, "%s\t%t\t%t\t%t\t%s\n", r.Name, r.Read, r.Resume, r.Display, strings.Join(r.Enforceable, ","))
 			}
 			return out.Flush()
 		},

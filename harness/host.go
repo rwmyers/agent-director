@@ -235,7 +235,7 @@ func Locate(names []string, lookup func(string) (Adapter, error)) (Location, boo
 			Harness: name,
 			Ref:     ref,
 			Hosting: HostingOf(adapter),
-			Display: displays(adapter),
+			Display: Displays(adapter),
 		}
 		if !found || closer(candidate, best) {
 			best, found = candidate, true
@@ -244,8 +244,14 @@ func Locate(names []string, lookup func(string) (Adapter, error)) (Location, boo
 	return best, found
 }
 
-// displays reports whether an adapter has declared itself a display layer.
-func displays(adapter Adapter) bool {
+// Displays reports whether an adapter has declared itself a display layer.
+//
+// It is exported because the question is asked outside this package too: an
+// installer refusing a harness has to say why, and "it shows somebody else's
+// agent, which reads its own skills" is a different refusal from "never heard
+// of it". Asking is all this does — the declaration still belongs to the
+// adapter, and one that does not implement Display is not a display.
+func Displays(adapter Adapter) bool {
 	display, ok := adapter.(Display)
 	return ok && display.Displays()
 }

@@ -83,6 +83,41 @@ func lookupHost(hosts []host, name string) (host, bool) {
 	return host{}, false
 }
 
+// notATarget explains a --host that installing has no answer for.
+//
+// Two sets go by the word "harness" and they are not the same set. `director
+// harnesses` lists what director can drive, which needs a working protocol;
+// this lists what has somewhere to put skills, which needs a pair of
+// directories. herdr is where the difference shows: director drives it, and it
+// reads no skills at all, because a pane displays somebody else's agent and
+// that agent loads skills from its own harness. Answering "unknown harness"
+// there is simply false, and it sends the reader looking for a broken registry
+// instead of at the claude-code entry that is already doing the job.
+//
+// So the refusal answers whichever question the name belongs to: a harness that
+// can be driven is named as one and told where its skills actually come from; a
+// name in neither set is the only one that gets "unknown".
+func notATarget(name string, available []host) error {
+	var known []string
+	for _, candidate := range available {
+		known = append(known, candidate.name)
+	}
+	targets := strings.Join(known, ", ")
+
+	adapter, err := harness.Lookup(name)
+	if err != nil {
+		return fmt.Errorf("unknown harness %q (install targets: %s)\n"+
+			"       `director harnesses` lists the separate set director can drive", name, targets)
+	}
+
+	because := "it has no skills directory of its own"
+	if harness.Displays(adapter) {
+		because = "it displays another harness's conversation, and the agent it displays reads skills from its own harness"
+	}
+	return fmt.Errorf("%s is a harness director can drive, not one skills are installed into: %s\n"+
+		"       Install for the agent you direct from inside it instead (install targets: %s)", name, because, targets)
+}
+
 func newInstallCmd() *cobra.Command {
 	var scope string
 	var hostNames []string
@@ -97,6 +132,11 @@ can pick them up as /director.
 Asks which harness and whether to install for this project or for every
 project. Pass --host and --scope to skip the questions, which is what a setup
 script wants.
+
+The harnesses offered here are the ones with somewhere to put a skill, which is
+not the set director can drive — that is what ` + "`director harnesses`" + ` lists. A harness
+that displays another harness's conversation reads no skills of its own, so
+install for the agent you run inside it instead.
 
 Nothing is written into .director/ — the skills are the director's operating
 instructions and ship with the binary. Edit them and they stop being what
@@ -195,33 +235,17 @@ func resolveHosts(names []string) ([]host, error) {
 		for _, name := range names {
 			found, ok := lookupHost(available, name)
 			if !ok {
-				var known []string
-				for _, candidate := range available {
-					known = append(known, candidate.name)
-				}
-				return nil, fmt.Errorf("unknown harness %q (known: %s)", name, strings.Join(known, ", "))
+				return nil, notATarget(name, available)
 			}
 			chosen = append(chosen, found)
 		}
 		return chosen, nil
 	}
 
-	var options []huh.Option[string]
-	for _, candidate := range available {
-		label := candidate.locations.Description
-		if candidate.locations.Present {
-			label += "  (detected)"
-		}
-		option := huh.NewOption(label, candidate.name)
-		// Pre-select what is actually here, so the common case is one keypress
-		// and the uncommon one is still visible.
-		options = append(options, option.Selected(candidate.locations.Present))
-	}
-
 	picked, err := newPrompter().selectMany(
 		"Which harness should be able to direct?",
 		"Skills are how an agent learns to act as a director. Pick every harness you direct from.",
-		options)
+		hostOptions(available))
 	if err != nil {
 		return nil, err
 	}
@@ -233,6 +257,27 @@ func resolveHosts(names []string) ([]host, error) {
 		}
 	}
 	return chosen, nil
+}
+
+// hostOptions renders every install target as a pickable option.
+//
+// Every target and nothing else: the list offered must be the list --host
+// accepts, or somebody who cannot find their harness in the picker concludes
+// director cannot install for it, when naming it on the command line would have
+// worked all along.
+func hostOptions(available []host) []huh.Option[string] {
+	options := make([]huh.Option[string], 0, len(available))
+	for _, candidate := range available {
+		label := candidate.locations.Description
+		if candidate.locations.Present {
+			label += "  (detected)"
+		}
+		option := huh.NewOption(label, candidate.name)
+		// Pre-select what is actually here, so the common case is one keypress
+		// and the uncommon one is still visible.
+		options = append(options, option.Selected(candidate.locations.Present))
+	}
+	return options
 }
 
 func targetDir(h host, scope Scope, projectRoot string) (string, error) {
