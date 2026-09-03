@@ -1,6 +1,6 @@
 ---
-name: director-new
-description: Turn a loose request into one well-formed director spawn - choosing the task type from the workflow, eliciting the parts of the brief the person left out, and dispatching it. Use when someone says /director-new, describes a piece of work in a sentence and wants it delegated, or asks you to spawn, dispatch or brief an engagement.
+name: new-engagement
+description: Turn a loose request into one well-formed director spawn - choosing the task type from the workflow, eliciting the parts of the brief the person left out, and dispatching it. Use when someone says /new-engagement, describes a piece of work in a sentence and wants it delegated, or asks you to spawn, dispatch or brief an engagement.
 ---
 
 # Briefing one engagement

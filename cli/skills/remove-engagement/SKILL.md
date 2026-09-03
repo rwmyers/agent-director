@@ -1,5 +1,5 @@
 ---
-name: director-remove
+name: remove-engagement
 description: Drop engagements from a director's record with director remove - how to resolve which ones, naming several at once, when removing one strands a running agent, what removal does not touch, and the harness slot it does reclaim. Use when a spawn failed and left a row nothing can clear, when a batch of finished engagements is only noise in the status table, or when asked to remove, clear or forget engagements.
 ---
 
