@@ -37,7 +37,7 @@ func newFakeServer(t *testing.T, replies map[string]any) *fakeServer {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := &fakeServer{t: t, path: filepath.Join(dir, "h.sock"), replies: replies}
+	server := &fakeServer{t: t, path: filepath.Join(dir, "h.sock"), replies: withSessionReplies(replies)}
 
 	listener, err := net.Listen("unix", server.path)
 	if err != nil {
@@ -184,9 +184,114 @@ func paneReadReply(paneID, text string, truncated bool) map[string]any {
 	}
 }
 
+// withSessionReplies fills in the questions every spawn now asks about the
+// session it is placing work into, for the tests that are about something else.
+//
+// A spawn resolves a window before it creates anything, so a fixture that
+// answered nothing would describe a herdr with no windows in it — which no real
+// one is. A test that wants to state what the session looks like still says so
+// and is left alone.
+func withSessionReplies(replies map[string]any) map[string]any {
+	filled := map[string]any{
+		"workspace.list": workspaceListReply(workspaceReply("w1", fleetWorkspaceLabel)),
+	}
+	for method, reply := range replies {
+		filled[method] = reply
+	}
+	return filled
+}
+
+// workspaceReply is herdr's view of one window, carrying every field its
+// published schema marks required.
+func workspaceReply(workspaceID, label string) map[string]any {
+	return map[string]any{
+		"workspace_id": workspaceID, "number": 1, "label": label,
+		"focused": false, "pane_count": 1, "tab_count": 1,
+		"active_tab_id": workspaceID + ":t1", "agent_status": "unknown",
+	}
+}
+
+// workspaceListReply is what workspace.list answers with.
+func workspaceListReply(workspaces ...map[string]any) map[string]any {
+	return map[string]any{"type": "workspace_list", "workspaces": workspaces}
+}
+
+// workspaceCreatedReply is what workspace.create answers with: the window, plus
+// the tab and root pane herdr opens along with it.
+func workspaceCreatedReply(workspaceID string) map[string]any {
+	return map[string]any{
+		"type":      "workspace_created",
+		"workspace": workspaceReply(workspaceID, fleetWorkspaceLabel),
+		"tab": map[string]any{
+			"tab_id": workspaceID + ":t1", "workspace_id": workspaceID, "number": 1,
+			"label": fleetWorkspaceLabel, "focused": false,
+			"pane_count": 1, "agent_status": "unknown",
+		},
+		"root_pane": map[string]any{
+			"pane_id": workspaceID + ":p1", "terminal_id": "term1",
+			"workspace_id": workspaceID, "tab_id": workspaceID + ":t1",
+			"focused": false, "agent_status": "unknown", "revision": 0,
+		},
+	}
+}
+
+// paneInfoReply is what pane.get answers with: the pane nested under "pane".
+func paneInfoReply(paneID, workspaceID string) map[string]any {
+	return map[string]any{
+		"type": "pane_info",
+		"pane": map[string]any{
+			"pane_id": paneID, "terminal_id": "term1", "workspace_id": workspaceID,
+			"tab_id": workspaceID + ":t1", "focused": false,
+			"agent_status": "unknown", "revision": 0,
+		},
+	}
+}
+
+// adapter builds an adapter against this server that is deliberately not in a
+// pane.
+//
+// Self-location is stated rather than read, because it now decides where a
+// spawn lands: a suite run inside a real herdr session — which is exactly where
+// this code gets written — would otherwise resolve somebody's live window and
+// place fixtures in it.
 func (s *fakeServer) adapter() *Adapter {
+	return s.adapterInPane("", false)
+}
+
+// adapterInPane builds an adapter that reports itself sitting in a given pane.
+func (s *fakeServer) adapterInPane(paneID string, inside bool) *Adapter {
 	fixed := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
-	return &Adapter{Socket: s.path, Kind: defaultKind, Now: func() time.Time { return fixed }}
+	return &Adapter{
+		Socket: s.path, Kind: defaultKind,
+		Now:    func() time.Time { return fixed },
+		InPane: func() (string, bool) { return paneID, inside },
+	}
+}
+
+// methods lists the calls this server was asked for, in order.
+func (s *fakeServer) methods() []string {
+	names := make([]string, len(s.calls))
+	for i, call := range s.calls {
+		names[i] = call.Method
+	}
+	return names
+}
+
+// params returns the parameters of the first call of a method.
+func (s *fakeServer) params(method string) map[string]any {
+	s.t.Helper()
+	for _, call := range s.calls {
+		if call.Method != method {
+			continue
+		}
+		params, ok := call.Params.(map[string]any)
+		if !ok {
+			s.t.Fatalf("%s params = %T, want an object", method, call.Params)
+		}
+		return params
+	}
+	s.t.Fatalf("%s was never called; calls were %v", method, s.methods())
+	return nil
 }
 
 func TestServerNotRunningIsReportedNotGuessed(t *testing.T) {
@@ -309,13 +414,12 @@ func TestSpawnIsTwoCalls(t *testing.T) {
 		t.Errorf("Detail[tab_id] = %q, want %q from the nested tab object", result.Detail["tab_id"], "t1")
 	}
 
-	methods := make([]string, len(server.calls))
-	for i, call := range server.calls {
-		methods[i] = call.Method
-	}
-	// agent.wait sits between the two because herdr will not accept a prompt for
-	// an agent whose launch it has not settled.
-	want := []string{"tab.create", "agent.start", "agent.wait", "agent.prompt"}
+	methods := server.methods()
+	// workspace.list comes first because the window an engagement goes in is
+	// settled before anything is created. agent.wait sits between the two
+	// because herdr will not accept a prompt for an agent whose launch it has
+	// not settled.
+	want := []string{"workspace.list", "tab.create", "agent.start", "agent.wait", "agent.prompt"}
 	if strings.Join(methods, ",") != strings.Join(want, ",") {
 		t.Errorf("Spawn() called %v, want %v", methods, want)
 	}
@@ -944,10 +1048,7 @@ func TestSpawnDoesNotForwardAPaneIdentity(t *testing.T) {
 		t.Fatalf("Spawn() = %v, want no error", err)
 	}
 
-	params, ok := server.calls[0].Params.(map[string]any)
-	if !ok {
-		t.Fatalf("tab.create params = %T, want an object", server.calls[0].Params)
-	}
+	params := server.params("tab.create")
 	env, ok := params["env"].(map[string]any)
 	if !ok {
 		t.Fatalf("tab.create env = %T, want an object", params["env"])
