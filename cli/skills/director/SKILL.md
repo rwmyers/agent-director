@@ -388,9 +388,14 @@ attach` said this host allows, rather than hoping for a turn.
 
 ## Going further
 
-- `director-inspect` — reading results, and every trap in the status
-  output. Load it before you read an engagement.
 - `director-workflows` — task types, permissions, and placement. Load it
   before your first spawn of a session.
+- `new-engagement` — turning a loose request into one well-formed spawn.
+  Load it when you are about to brief and dispatch a piece of work.
+- `director-inspect` — reading results, and every trap in the status
+  output. Load it before you read an engagement.
 - `progress-engagement` — chaining one engagement to a successor, so that
-  "when that one is done, start this" needs nobody present in between.
+  "when that one is done, start this" needs nobody present in between. Load
+  it when somebody queues the next piece of work in advance.
+- `remove-engagement` — dropping engagements from your record, and what
+  removing a live one strands. Load it before you remove anything.
