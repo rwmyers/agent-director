@@ -19,7 +19,7 @@ func newRemoveCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:     "remove [engagement...]",
-		Aliases: []string{"forget"},
+		Aliases: []string{"forget", "rm"},
 		Short:   "Drop engagements from this director's record",
 		Long: `Removes engagements from the state file, so they stop appearing in
 "director status". Use it for a failed spawn or a finished piece of work whose

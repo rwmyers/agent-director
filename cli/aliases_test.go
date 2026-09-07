@@ -1,51 +1,98 @@
 package cli
 
 import (
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
 )
 
-// TestNoTwoCommandsAnswerToTheSameName guards the hazard that stopped `rm`
-// from being added to `director remove`: `rm` is already an alias of `director
-// retire`, and cobra resolves the first command that claims a name without
-// saying anything about the one it shadowed.
+// findCommand returns the top-level command with this name, failing if there
+// is none.
+func findCommand(t *testing.T, name string) *cobra.Command {
+	t.Helper()
+	for _, cmd := range newRootCmd().Commands() {
+		if cmd.Name() == name {
+			return cmd
+		}
+	}
+	t.Fatalf("no %q command", name)
+	return nil
+}
+
+// spokenNames is every word a command answers to.
+func spokenNames(cmd *cobra.Command) []string {
+	return append([]string{cmd.Name()}, cmd.Aliases...)
+}
+
+// TestNoTwoCommandsAnswerToTheSameName is the guard the whole namespace rests
+// on. Cobra resolves the first command that claims a name and says nothing
+// about the one it shadowed, so a collision is invisible at the point it is
+// introduced and shows up later as a command doing something else entirely.
 //
-// The two commands that would have collided delete at wildly different
-// granularities — one engagement, or a whole director and its memory of every
-// engagement it holds — so a name that quietly moved from one to the other is
-// not a typo somebody notices. It is checked here rather than left to review
-// because nothing in cobra reports it, and adding an alias is a one-line
-// change that looks obviously safe.
+// That is not hypothetical here: `rm` was an alias of `retire` and was asked
+// for on `remove`, and the two delete at wildly different granularities — one
+// engagement, or a whole director and its memory of every engagement it holds.
+// This is what makes moving it a deliberate act rather than a silent one.
 func TestNoTwoCommandsAnswerToTheSameName(t *testing.T) {
 	claimed := map[string]string{}
 	for _, cmd := range newRootCmd().Commands() {
-		name := cmd.Name()
-		for _, spoken := range append([]string{name}, cmd.Aliases...) {
+		for _, spoken := range spokenNames(cmd) {
 			if owner, taken := claimed[spoken]; taken {
 				t.Errorf("%q is claimed by both %q and %q; cobra will resolve it to one of them silently",
-					spoken, owner, name)
+					spoken, owner, cmd.Name())
 				continue
 			}
-			claimed[spoken] = name
+			claimed[spoken] = cmd.Name()
 		}
 	}
 }
 
-// TestRemoveAdvertisesItsAliases checks the aliases are discoverable to
-// somebody reading the help rather than the source. Cobra prints them without
-// being asked, and this is what says so.
-func TestRemoveAdvertisesItsAliases(t *testing.T) {
-	for _, cmd := range newRootCmd().Commands() {
-		if cmd.Name() != "remove" {
-			continue
-		}
-		help := cmd.UsageString()
-		for _, alias := range cmd.Aliases {
-			if !strings.Contains(help, alias) {
-				t.Errorf("director remove --help does not mention its alias %q", alias)
-			}
-		}
-		return
+// TestRmMeansRemove pins which command owns `rm`, in both directions.
+//
+// Uniqueness alone would be satisfied by `rm` going back to `retire`, and that
+// is the regression worth naming outright: the word reads as "remove"
+// everywhere else a person has ever typed it, and pointing it at the command
+// that deletes a director and its entire fleet record is the trap this
+// namespace was rearranged to close.
+func TestRmMeansRemove(t *testing.T) {
+	const alias = "rm"
+
+	remove := findCommand(t, "remove")
+	if !slices.Contains(remove.Aliases, alias) {
+		t.Errorf("director remove answers to %v, want it to include %q", remove.Aliases, alias)
 	}
-	t.Fatal("no remove command")
+	retire := findCommand(t, "retire")
+	if slices.Contains(spokenNames(retire), alias) {
+		t.Errorf("director retire answers to %v, want %q to belong to remove alone", spokenNames(retire), alias)
+	}
+
+	// And that it actually resolves, rather than merely being declared: the
+	// alias is only worth anything if cobra dispatches on it.
+	found, _, err := newRootCmd().Find([]string{alias})
+	if err != nil {
+		t.Fatalf("Find(%q) = %v, want it to resolve", alias, err)
+	}
+	if found.Name() != "remove" {
+		t.Errorf("director %s resolves to %q, want %q", alias, found.Name(), "remove")
+	}
+}
+
+// TestRemoveAdvertisesItsAliases checks the aliases are discoverable to
+// somebody reading the help rather than the source, which was the whole ask:
+// `rm` does not need to be a listed top-level option, it needs to be findable
+// by anybody reading `director remove --help`. Cobra prints an Aliases line
+// without being asked, and this is what says so.
+func TestRemoveAdvertisesItsAliases(t *testing.T) {
+	remove := findCommand(t, "remove")
+	if len(remove.Aliases) == 0 {
+		t.Fatal("director remove declares no aliases")
+	}
+	help := remove.UsageString()
+	for _, alias := range remove.Aliases {
+		if !strings.Contains(help, alias) {
+			t.Errorf("director remove --help does not mention its alias %q:\n%s", alias, help)
+		}
+	}
 }

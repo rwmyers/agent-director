@@ -14,8 +14,11 @@ func newRetireCmd() *cobra.Command {
 	var opt director.RetireOptions
 
 	cmd := &cobra.Command{
-		Use:     "retire [director...]",
-		Aliases: []string{"rm", "delete"},
+		Use: "retire [director...]",
+		// "rm" is deliberately not here. It reads as "remove", and `director
+		// remove` is what removes — one engagement, not a whole director and
+		// its memory of every engagement it holds.
+		Aliases: []string{"delete"},
 		Short:   "Remove a director and its record of what it was running",
 		Long: `Removes a director's state file. With no arguments, offers a pick list.
 
@@ -27,7 +30,10 @@ So this refuses while anything is still alive, and tells you which. Use --stop
 to end them first, or --force to orphan them deliberately.
 
 Retiring does not touch the workflow, the prompts, or any transcript. It
-removes one director's memory of its own fleet.`,
+removes one director's memory of its own fleet.
+
+This is "retire" or "delete". "rm" is "director remove", which drops one
+engagement — if you meant to retire a whole director, type it out.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			roots, err := resolveRoots()
