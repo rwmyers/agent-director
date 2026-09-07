@@ -315,6 +315,15 @@ it is rate-limited, and it stops working if somebody else attaches to this
 director after you. The state file is the record either way, so `director
 status` is still what you act on.
 
+**So will a removal you did not make.** If somebody at a shell runs `director
+remove`, the same channel types one line naming what they took out of your
+record. That is not news about an agent — it is your fleet having changed
+underneath you, so the rows you remember are already wrong. Run `director
+status` before you read, answer or note anything. You are never rung about a
+removal you ran yourself, and on a host that cannot be woken nothing arrives at
+all: the person is told so at their console, and you find out at your next
+`director status`.
+
 **Neither.** Say so when you hand back. Tell the person plainly that nothing
 will be checked until they prompt you, rather than implying someone is watching.
 `director wait` will refuse here with exit `5`, and forcing it past that is how

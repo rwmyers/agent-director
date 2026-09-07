@@ -35,6 +35,9 @@ type fleetAdapter struct {
 	// that worked: after it the agent may still be running.
 	stopErr error
 	stopped []string
+	// sends records what was prompted into a conversation, which is how a
+	// test sees a ring that landed on the director's own host.
+	sends []harness.SendRequest
 }
 
 func (a *fleetAdapter) Name() string                         { return a.name }
@@ -45,7 +48,10 @@ func (a *fleetAdapter) Spawn(_ context.Context, req harness.SpawnRequest) (harne
 	return harness.SpawnResult{Ref: "ref-" + req.ID}, nil
 }
 
-func (a *fleetAdapter) Send(context.Context, harness.SendRequest) error { return nil }
+func (a *fleetAdapter) Send(_ context.Context, req harness.SendRequest) error {
+	a.sends = append(a.sends, req)
+	return nil
+}
 
 func (a *fleetAdapter) Stop(_ context.Context, req harness.StopRequest) error {
 	if a.stopErr != nil {

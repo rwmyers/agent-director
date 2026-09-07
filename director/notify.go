@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/rwmyers/agent-director/harness"
@@ -24,6 +25,12 @@ var (
 	// ErrNothingToWakeFor means the engagement is fine and the director has
 	// nothing to do about it.
 	ErrNothingToWakeFor = errors.New("nothing about this engagement needs the director")
+	// ErrNotAttached means no conversation is sitting at this director: nothing
+	// recorded a host, or the claim is old enough that whoever made it has
+	// gone. There is nobody to surprise.
+	ErrNotAttached = errors.New("no conversation is currently attached to this director")
+	// ErrOwnRemoval means the news is the recipient's own action.
+	ErrOwnRemoval = errors.New("this director removed the engagement itself")
 )
 
 // notify rings the director, if it is able to be rung and there is news.
@@ -154,4 +161,161 @@ func wakeText(engagement *Engagement) string {
 	}
 	return fmt.Sprintf("Your engagement %s (%s) is %s. Run `director status --unhealthy` and deal with it.",
 		engagement.ID, engagement.Title, what)
+}
+
+// NotifyRemoved tells an attached director that somebody else has taken
+// engagements out of its record.
+//
+// # Why this exists at all
+//
+// Every other wake in this file is an engagement reporting news about itself,
+// and the director's picture of the fleet stays true whether the wake lands or
+// not. A removal is the opposite: the record changed underneath a conversation
+// that is holding its own copy of it. A director that is not told does not
+// merely learn late — it goes on believing in a row that has gone, and the
+// first sign is a "not found" from `director read` on an engagement it can
+// still see in its own scrollback.
+//
+// So unlike notify, this is not purely an optimisation over the record. It is
+// still not the record — the state file remains the truth and a lost ring
+// costs only staleness — but the staleness it prevents is the kind that makes
+// the director act wrongly rather than late.
+//
+// # One ring for the whole invocation
+//
+// It takes the batch rather than one result because `director remove a b c` is
+// one human action. Ringing three times would be three lines typed into a live
+// conversation for a single decision, which is the failure this is under
+// instructions not to reproduce.
+//
+// # No floor
+//
+// notify holds a floor because a fleet reporting in unison would otherwise
+// type a dozen lines into the conversation. Removals are not a fleet: they are
+// a person at a keyboard, at human rate, and a floor here would silently drop
+// exactly the message whose loss this exists to prevent. The wake is still
+// recorded, because it is a line typed into the conversation and the floor for
+// everything else should count it.
+//
+// # What is deliberately not done
+//
+// Nothing is written down for a director that cannot be woken. There is no
+// inbox in the state file to write it to, and the removed rows are gone from
+// the one place a director looks. Saying so to the person at the console is
+// therefore the honest end of the road — see the caller.
+func (d *Director) NotifyRemoved(ctx context.Context, removed []*RemoveResult) error {
+	if len(removed) == 0 {
+		return fmt.Errorf("%w: nothing was removed", ErrNothingToWakeFor)
+	}
+	host := d.State.Host
+
+	// First, and before anything that could be reported to a person. A
+	// director runs `director remove` itself, routinely, and telling a
+	// conversation what it just did is pure noise — as is telling the person
+	// that the noise could not be delivered.
+	if d.selfInitiated() {
+		return fmt.Errorf("%w: %s", ErrOwnRemoval, host.Describe())
+	}
+
+	now := d.now()
+	if !host.Known() {
+		return fmt.Errorf("%w: no host was recorded", ErrNotAttached)
+	}
+	if d.State.AttachedAt.IsZero() || now.Sub(d.State.AttachedAt) > AttachGrace {
+		return fmt.Errorf("%w: last attached %s ago, and the grace is %s",
+			ErrNotAttached, now.Sub(d.State.AttachedAt).Round(time.Second), AttachGrace)
+	}
+
+	// Attached, and cannot be reached. Separated from the two above because
+	// this is the only one worth saying out loud: somebody is sitting there,
+	// holding a picture that is now wrong, and nothing will correct it until
+	// they look.
+	if !host.Hosting.Wake {
+		return fmt.Errorf("%w: %s", ErrNoWake, host.Describe())
+	}
+	if host.Ref == "" {
+		return fmt.Errorf("%w: no address was recorded for %s", ErrNoWake, host.Harness)
+	}
+
+	adapter, err := d.lookup(host.Harness)
+	if err != nil {
+		return err
+	}
+
+	// Recorded whether or not the send worked, on the same terms as notify: an
+	// attempt is an attempt, and a broken address that is retried is how a
+	// conversation fills up with identical lines.
+	sendErr := adapter.Send(ctx, harness.SendRequest{Ref: host.Ref, Text: removalText(removed)})
+	if err := d.mutate(func(state *State) error {
+		state.Host.LastWokenAt = now
+		return nil
+	}); err != nil {
+		return err
+	}
+	return sendErr
+}
+
+// selfInitiated reports whether the command running now is running inside the
+// conversation the director itself occupies.
+//
+// It compares where this process is, worked out fresh, against the address the
+// director recorded when it attached. Both must name the same harness and the
+// same non-empty conversation. An empty address is never a match: a host that
+// recorded no address — Claude Code with no session id — would otherwise make
+// every other Claude Code conversation on the machine look like this one.
+//
+// A false yes costs a ring that should have happened; a false no costs a
+// director being told about its own action. Requiring an exact address on both
+// sides is what keeps either from happening by accident rather than by a
+// harness genuinely being unable to tell two conversations apart.
+func (d *Director) selfInitiated() bool {
+	host := d.State.Host
+	if !host.Known() || host.Ref == "" {
+		return false
+	}
+	here := d.locateHost()
+	return here.Known() && here.Harness == host.Harness && here.Ref == host.Ref
+}
+
+// namedInRemoval is how many engagements a ring spells out before it stops.
+//
+// Enough that the ordinary case — one or two rows cleared — is named in full,
+// and few enough that clearing a finished batch of twenty does not paste
+// twenty identifiers into somebody's conversation. The count carries the rest,
+// and status carries the truth.
+const namedInRemoval = 3
+
+// removalText is what lands in the director's conversation.
+//
+// It has to do three things its cousin wakeText does not. It must say the
+// removal came from outside, because the director also removes engagements and
+// would otherwise read this as an echo of its own command. It must name what
+// went, because the rows are already gone and status cannot show them. And it
+// must say the fleet is not what the director last saw, because the failure
+// being prevented is the director acting on a row from its own scrollback.
+//
+// As with wakeText it points at the record rather than being it, so a line
+// that is truncated or delivered twice costs nothing.
+func removalText(removed []*RemoveResult) string {
+	named := make([]string, 0, namedInRemoval)
+	for _, result := range removed {
+		if len(named) == namedInRemoval {
+			break
+		}
+		named = append(named, fmt.Sprintf("%s (%s)", result.EngagementID, result.Title))
+	}
+	list := strings.Join(named, ", ")
+	if rest := len(removed) - len(named); rest > 0 {
+		list = fmt.Sprintf("%s, and %d more", list, rest)
+	}
+
+	noun := "engagement"
+	if len(removed) != 1 {
+		noun = "engagements"
+	}
+	return fmt.Sprintf(
+		"Somebody other than you removed %d %s from your record: %s. "+
+			"They are gone from your fleet and can no longer be read, answered or stopped. "+
+			"Run `director status` before acting on anything you remember holding.",
+		len(removed), noun, list)
 }

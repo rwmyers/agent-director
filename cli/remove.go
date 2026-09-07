@@ -51,7 +51,14 @@ ever gives it back. It is closed only for an engagement the harness confirms
 has finished, or one --stop has just successfully ended, and never for --force
 or for the conversation this director is itself running in. Harnesses with no
 such slot are unaffected. A slot that will not close does not fail the removal:
-the row has already gone, so it is reported and left for you to close by hand.`,
+the row has already gone, so it is reported and left for you to close by hand.
+
+Run from a shell while a director conversation is attached, this rings that
+conversation so it is not left holding a fleet that no longer matches the
+record. It says what went and sends the director to "director status". A
+director removing its own engagements is never rung about them, and a host that
+cannot be woken — Claude Code — is reported here instead, because there is
+nowhere to leave the news for a director whose rows have just been deleted.`,
 		Args: cobra.ArbitraryArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			d, err := open()
@@ -85,6 +92,14 @@ the row has already gone, so it is reported and left for you to close by hand.`,
 				results = append(results, result)
 			}
 
+			// Tell an attached director before anything is printed, so the
+			// note about what became of the attempt sits with the removals it
+			// is about. The error is discarded rather than returned for the
+			// same reason a wake's is: the rows are already gone, and a
+			// removal that worked must not exit non-zero because a message
+			// about it did not land.
+			ring := d.NotifyRemoved(cmd.Context(), results)
+
 			if opts.asJSON {
 				if err := emit(results); err != nil {
 					return err
@@ -93,6 +108,7 @@ the row has already gone, so it is reported and left for you to close by hand.`,
 				for _, result := range results {
 					reportRemoved(result)
 				}
+				reportRing(ring)
 			}
 
 			return combineFailures("removed", failures, len(fragments))
@@ -227,5 +243,34 @@ func reportDisposal(result *director.RemoveResult) {
 	case director.DisposalFailed:
 		fmt.Printf("  its %s slot could not be closed: %s\n", result.Harness, result.DisposalReason)
 		fmt.Printf("  The row is gone regardless, so there is nothing to run again. Close it in %s directly.\n", result.Harness)
+	}
+}
+
+// reportRing says what became of the attempt to tell an attached director that
+// this happened.
+//
+// Only two outcomes are worth a line. A ring that was sent, because the person
+// should know a line has just been typed into somebody's live conversation —
+// worded as an attempt, since a harness that accepts a prompt into a busy pane
+// reports success whether or not it is ever read.
+//
+// And a director that is attached and cannot be woken. That is the case this
+// whole path exists to be honest about: a conversation is sitting there
+// holding a fleet that no longer matches the record, nothing can reach into
+// it, and there is nowhere to leave the news — the rows a director reads are
+// exactly the ones just deleted. So the person at the console is told, because
+// they are the only one who is actually there.
+//
+// Everything else is silence. No director attached is nobody to surprise, and
+// a director removing its own engagement already knows; saying either out loud
+// would put a line under every removal for no reason.
+func reportRing(err error) {
+	switch {
+	case err == nil:
+		fmt.Printf("\n  rang its director\n")
+	case errors.Is(err, director.ErrNoWake):
+		fmt.Printf("\n  could not tell its director: %v\n", err)
+		fmt.Printf("  It is attached and holding a fleet that no longer matches this record. It will not\n")
+		fmt.Printf("  know until it next runs `director status`.\n")
 	}
 }
