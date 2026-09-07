@@ -77,7 +77,13 @@ func (p prompter) run(field promptField) error {
 	}
 	// The field's own Run() builds a form with the help footer switched off,
 	// which would leave the keybindings undiscoverable, so build it here.
-	return huh.NewForm(huh.NewGroup(field)).WithShowHelp(true).Run()
+	//
+	// The reader and writer are handed over explicitly. In production they are
+	// os.Stdin and os.Stdout, which is what the form would have used anyway;
+	// saying so lets a test drive the full TUI — an abort, in particular —
+	// without a pty.
+	return huh.NewForm(huh.NewGroup(field)).WithShowHelp(true).
+		WithInput(p.in).WithOutput(p.out).Run()
 }
 
 // selectOne asks a single-choice question. Aborting returns the zero value and
@@ -134,11 +140,17 @@ func (p prompter) selectMany(title, description string, options []huh.Option[str
 
 // confirm asks a yes/no question.
 //
-// Anything other than an explicit yes — including aborting, and including an
-// empty stdin in accessible mode — declines, so backing out never triggers the
-// action being confirmed.
-func (p prompter) confirm(title, description, affirmative, negative string) (bool, error) {
-	var confirmed bool
+// defaultAffirmative decides which of the two buttons opens selected, and so
+// what an answer of just Enter — or, in accessible mode, an empty line — means.
+// It is a per-question decision rather than a house style: defaulting to yes is
+// reasonable when the person has already said what they want and this is a
+// second look at a choice they made, and unreasonable when the confirmation is
+// the only thing between one keystroke and something large and irreversible.
+//
+// Aborting always declines, whatever the default is, so backing out of a
+// question never triggers the action it was asking about.
+func (p prompter) confirm(title, description, affirmative, negative string, defaultAffirmative bool) (bool, error) {
+	confirmed := defaultAffirmative
 	field := huh.NewConfirm().
 		Title(title).
 		Description(description).
@@ -164,8 +176,19 @@ type pickList struct {
 	// "Remove".
 	verb string
 	// noun names one of the things being chosen — "director", "engagement".
-	noun    string
-	options []huh.Option[string]
+	noun string
+	// defaultConfirm is whether the confirmation opens on the verb rather than
+	// on Cancel.
+	//
+	// The zero value is the cautious one on purpose: a pick list added later
+	// gets Cancel selected unless somebody decides otherwise for it, and the
+	// decision is per list because the two lists here are not the same size of
+	// mistake. Choosing engagements to remove and then confirming is a second
+	// look at rows already picked out by hand; retiring a director discards
+	// its whole record of a fleet, and a confirmation that opens on "Retire"
+	// makes that one keystroke away.
+	defaultConfirm bool
+	options        []huh.Option[string]
 }
 
 // pick offers a multi-select and then confirms what came back.
@@ -192,7 +215,7 @@ func (p prompter) pick(list pickList) ([]string, error) {
 	confirmed, err := p.confirm(
 		fmt.Sprintf("%s %d %s(s)?", list.verb, len(chosen), list.noun),
 		strings.Join(labels, "\n"),
-		list.verb, "Cancel")
+		list.verb, "Cancel", list.defaultConfirm)
 	if err != nil || !confirmed {
 		return nil, err
 	}
