@@ -157,7 +157,11 @@ func pickEngagements(cmd *cobra.Command, d *director.Director) ([]string, error)
 		description: "Removing an engagement does not stop its agent — it makes it unreachable. Anything still running is refused unless you pass --stop or --force.",
 		verb:        "Remove",
 		noun:        "engagement",
-		options:     options,
+		// Somebody who got here ran remove and then picked these rows out by
+		// hand. Opening the confirmation on Cancel makes the default answer
+		// throw that away.
+		defaultConfirm: true,
+		options:        options,
 	})
 }
 
