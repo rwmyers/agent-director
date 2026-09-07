@@ -127,7 +127,7 @@ blocking on this would mean doing nothing while it waits.`,
 			return nil
 		},
 	}
-	cmd.Flags().DurationVar(&interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
+	durationFlag(cmd, &interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
 	cmd.Flags().BoolVar(&initial, "initial", false, "emit the current state of every engagement before watching")
 	return cmd
 }
@@ -220,8 +220,8 @@ Exit codes:
 	}
 	cmd.Flags().StringSliceVar(&until, "until", defaultUntil, "comma-separated healths to wake on")
 	cmd.Flags().StringSliceVar(&engagements, "engagement", nil, "wait for these engagements only (default: any)")
-	cmd.Flags().DurationVar(&timeout, "timeout", 0, "give up after this long (default: wait forever)")
-	cmd.Flags().DurationVar(&interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
+	durationFlag(cmd, &timeout, "timeout", 0, "give up after this long, or 0 to wait forever")
+	durationFlag(cmd, &interval, "interval", director.DefaultWatchInterval, "how often to poll the harnesses")
 	cmd.Flags().BoolVar(&force, "force", false, "wait even where the host does not declare it can background one")
 	return cmd
 }

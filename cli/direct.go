@@ -608,7 +608,7 @@ Silently picking an option instead is how the wrong thing gets done quietly.`,
 		},
 	}
 	cmd.Flags().BoolVar(&wait, "wait", false, "block until answered and print the answer")
-	cmd.Flags().DurationVar(&timeout, "timeout", time.Hour, "how long to wait")
+	durationFlag(cmd, &timeout, "timeout", time.Hour, "how long to wait")
 	cmd.Flags().StringVar(&file, "file", "", "read the question from a file, or from standard input with -")
 	return cmd
 }
