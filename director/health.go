@@ -95,6 +95,18 @@ func deriveHealth(in healthInput) Health {
 		return HealthBlocked
 	}
 
+	// Reaching the declared finish line means the work is finished. Once the
+	// agent is no longer actively executing a turn (e.g. idle or process
+	// ended), the engagement is complete. It must not be evaluated against the
+	// reporting contract or stall threshold, because a finished agent
+	// naturally stops reporting.
+	if in.task.Terminal != "" && in.progress == in.task.Terminal {
+		if in.lifecycle != harness.LifecycleWorking {
+			return HealthComplete
+		}
+		return HealthOK
+	}
+
 	// The process is gone. The only question left is whether the work got
 	// where it was going, which is the progress axis's business and not the
 	// lifecycle's — the harness cannot distinguish a finished agent from one

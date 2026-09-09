@@ -140,6 +140,34 @@ func TestDeriveHealth(t *testing.T) {
 		}
 	})
 
+	t.Run("an idle engagement at terminal progress is complete even after the stall threshold", func(t *testing.T) {
+		t.Parallel()
+		// In session-based harnesses, reaching the finish line leaves the
+		// session idle rather than terminating the process. Once the declared
+		// terminal progress is reached and no turn is in flight, the work is
+		// complete and must not be marked stalled by silence.
+		in := input(func(in *healthInput) {
+			in.lifecycle = harness.LifecycleIdle
+			in.progress = "delivered"
+			in.now = base.Add(time.Hour)
+		})
+		if got := deriveHealth(in); got != HealthComplete {
+			t.Errorf("deriveHealth() = %v, want %v", got, HealthComplete)
+		}
+	})
+
+	t.Run("an engagement at terminal progress that is actively working a turn is ok", func(t *testing.T) {
+		t.Parallel()
+		in := input(func(in *healthInput) {
+			in.lifecycle = harness.LifecycleWorking
+			in.progress = "delivered"
+			in.now = base.Add(time.Hour)
+		})
+		if got := deriveHealth(in); got != HealthOK {
+			t.Errorf("deriveHealth() = %v, want %v", got, HealthOK)
+		}
+	})
+
 	t.Run("a task with no finish line cannot be accused of abandoning the work", func(t *testing.T) {
 		t.Parallel()
 		open := task
