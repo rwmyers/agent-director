@@ -183,6 +183,28 @@ func TestNotifyGuards(t *testing.T) {
 		}
 	})
 
+	t.Run("an engagement that could not be observed is not rung, and says why", func(t *testing.T) {
+		t.Parallel()
+		// A harness that cannot be reached leaves the engagement unknown, and
+		// unknown does not need the director — so no wake. The reason returned
+		// has to be the harness failure and not ErrNothingToWakeFor, which
+		// would claim the engagement was looked at and found fine.
+		d, adapter := wakeable(t, now)
+		engagement := spawnOne(t, d)
+		adapter.getErr = errors.New("herdr is not running")
+
+		err := d.notify(context.Background(), engagement.ID)
+		if err == nil || !strings.Contains(err.Error(), "herdr is not running") {
+			t.Errorf("notify() = %v, want the harness error", err)
+		}
+		if errors.Is(err, ErrNothingToWakeFor) {
+			t.Error("notify() reported nothing to wake for, but the engagement was never observed")
+		}
+		if sent := wakes(adapter); len(sent) != 0 {
+			t.Errorf("wakes = %d, want none", len(sent))
+		}
+	})
+
 	t.Run("a second wake inside the floor is dropped", func(t *testing.T) {
 		t.Parallel()
 		// The task reports every 5m, so that is the floor: a fleet reporting in

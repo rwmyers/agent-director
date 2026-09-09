@@ -91,7 +91,11 @@ func (d *Director) notify(ctx context.Context, engagementID string) error {
 			ErrWokenRecently, now.Sub(host.LastWokenAt).Round(time.Second), task.Name, floor)
 	}
 
-	if !worthWaking(ctx, d, engagement, task) {
+	worth, err := worthWaking(ctx, d, engagement, task)
+	if err != nil {
+		return err
+	}
+	if !worth {
 		return fmt.Errorf("%w: %s is %s", ErrNothingToWakeFor, engagementID, engagement.Health)
 	}
 
@@ -121,14 +125,32 @@ func (d *Director) notify(ctx context.Context, engagementID string) error {
 // single most useful message an engagement ever sends — I am finished — would
 // otherwise never ring anybody. A terminal report is the agent stating it is
 // done, which is exactly what the director is waiting to hear.
-func worthWaking(ctx context.Context, d *Director, engagement *Engagement, task Task) bool {
+//
+// # A failed observation is not news, and is not nothing either
+//
+// An observation that fails is not a stale health left standing: observe
+// replaces the verdict with HealthUnknown before it returns the error, and
+// unknown does not need the director — so the answer here is no, do not ring.
+// Ringing on it would be ringing to say the harness is unreachable, which is a
+// change to what unknown means and belongs in health, not in the doorway to a
+// wake.
+//
+// The error still travels rather than being dropped. Swallowing it would leave
+// notify reporting ErrNothingToWakeFor — the engagement is fine — when the
+// truth is that nobody could look at it, and conflating those two is exactly
+// what propagating observation errors was for. Nothing observable changes:
+// notify's errors are all reasons a wake did not happen, and every caller
+// discards them.
+func worthWaking(ctx context.Context, d *Director, engagement *Engagement, task Task) (bool, error) {
 	if task.Terminal != "" && engagement.Progress == task.Terminal {
-		return true
+		return true, nil
 	}
 	// Observing costs a harness call, so it happens last and only for an
 	// engagement that has not already answered the question.
-	d.observe(ctx, engagement)
-	return engagement.Health.NeedsDirector()
+	if err := d.observe(ctx, engagement); err != nil {
+		return false, err
+	}
+	return engagement.Health.NeedsDirector(), nil
 }
 
 // wakeFloor is the shortest gap between two wakes.
