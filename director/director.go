@@ -707,7 +707,9 @@ func (d *Director) Get(ctx context.Context, id string) (*Engagement, error) {
 	if !ok {
 		return nil, fmt.Errorf("%w: no engagement %q", ErrNotFound, id)
 	}
-	d.observe(ctx, engagement)
+	if err := d.observe(ctx, engagement); err != nil {
+		return nil, err
+	}
 	return engagement, nil
 }
 
@@ -717,7 +719,9 @@ func (d *Director) Status(ctx context.Context) ([]*Engagement, error) {
 	engagements := make([]*Engagement, 0, len(ids))
 	for _, id := range ids {
 		engagement := d.State.Engagements[id]
-		d.observe(ctx, engagement)
+		if err := d.observe(ctx, engagement); err != nil {
+			return nil, err
+		}
 		engagements = append(engagements, engagement)
 	}
 	sort.Slice(engagements, func(i, j int) bool {
@@ -732,7 +736,7 @@ func (d *Director) Status(ctx context.Context) ([]*Engagement, error) {
 // means the harness answered and does not know, while an error means it did not
 // answer at all. Conflating them would make a stopped herdr server look like a
 // fleet of confused agents, and the director would wait on them forever.
-func (d *Director) observe(ctx context.Context, engagement *Engagement) {
+func (d *Director) observe(ctx context.Context, engagement *Engagement) error {
 	engagement.PendingAsk = d.State.PendingAskFor(engagement.ID)
 	engagement.OpenAsks = d.State.OpenAskIDsFor(engagement.ID)
 
@@ -740,7 +744,7 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 		engagement.Lifecycle = harness.LifecycleUnknown
 		engagement.Detail["orphan"] = "spawn did not complete"
 		engagement.Health = HealthStalled
-		return
+		return nil
 	}
 
 	lookup := d.Lookup
@@ -752,7 +756,7 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 		engagement.Lifecycle = harness.LifecycleUnknown
 		engagement.Detail["harness_error"] = err.Error()
 		engagement.Health = HealthUnknown
-		return
+		return err
 	}
 
 	observation, err := adapter.Get(ctx, engagement.Ref)
@@ -760,7 +764,7 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 		engagement.Lifecycle = harness.LifecycleUnknown
 		engagement.Detail["harness_error"] = err.Error()
 		engagement.Health = HealthUnknown
-		return
+		return err
 	}
 	delete(engagement.Detail, "harness_error")
 
@@ -792,7 +796,7 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 		// spawned. Report what the harness sees and decline to judge, rather
 		// than judging against a contract that no longer exists.
 		engagement.Health = HealthUnknown
-		return
+		return nil
 	}
 
 	engagement.Health = deriveHealth(healthInput{
@@ -805,6 +809,7 @@ func (d *Director) observe(ctx context.Context, engagement *Engagement) {
 		startedAt:      engagement.StartedAt,
 		now:            d.now(),
 	})
+	return nil
 }
 
 // ReportOptions is what an agent says about itself in one call.

@@ -283,4 +283,27 @@ func TestRemove(t *testing.T) {
 			t.Errorf("Remove() = %v, want ErrNotFound", err)
 		}
 	})
+
+	t.Run("an adapter error on observation fails removal unless forced", func(t *testing.T) {
+		t.Parallel()
+		d, adapter, engagement := withEngagement(t, harness.LifecycleDone)
+		expectedErr := errors.New("command could not be executed because the command was executed from within a sandbox")
+		adapter.getErr = expectedErr
+
+		// Without force: fails with adapter error
+		if _, err := d.Remove(context.Background(), engagement.ID, RemoveOptions{}); !errors.Is(err, expectedErr) {
+			t.Errorf("Remove() err = %v, want %v", err, expectedErr)
+		}
+		if _, ok := d.State.Engagements[engagement.ID]; !ok {
+			t.Error("Remove() deleted the engagement despite observation error")
+		}
+
+		// With force: succeeds and removes
+		if _, err := d.Remove(context.Background(), engagement.ID, RemoveOptions{Force: true}); err != nil {
+			t.Errorf("Remove(Force: true) err = %v, want no error", err)
+		}
+		if _, ok := d.State.Engagements[engagement.ID]; ok {
+			t.Error("Remove(Force: true) failed to remove engagement from state")
+		}
+	})
 }

@@ -36,6 +36,7 @@ type fakeAdapter struct {
 	permitErr   error
 	spawnErr    error
 	sendErr     error
+	getErr      error
 	spawns      []harness.SpawnRequest
 	sends       []harness.SendRequest
 	observation harness.Observation
@@ -60,7 +61,7 @@ func (f *fakeAdapter) Send(_ context.Context, req harness.SendRequest) error {
 }
 
 func (f *fakeAdapter) Get(context.Context, string) (harness.Observation, error) {
-	return f.observation, nil
+	return f.observation, f.getErr
 }
 
 func (f *fakeAdapter) List(context.Context, harness.Filter) ([]harness.Observation, error) {
@@ -515,6 +516,31 @@ func TestDisplayNameSurvivesReload(t *testing.T) {
 	}
 	if got := reloaded.Engagements[engagement.ID].Name; got != "auth-review" {
 		t.Errorf("Name after reload = %q, want %q — it records what a person sees in the harness", got, "auth-review")
+	}
+}
+
+func TestAdapterErrorPropagatesToGetAndStatus(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	adapter := &fakeAdapter{name: "fake"}
+	d := newTestDirector(t, adapter, now)
+
+	eng, err := d.Spawn(context.Background(), SpawnOptions{
+		Task: "investigate", Name: "test-eng", Brief: "look",
+	})
+	if err != nil {
+		t.Fatalf("Spawn() = %v, want no error", err)
+	}
+
+	expectedErr := errors.New("command could not be executed because the command was executed from within a sandbox")
+	adapter.getErr = expectedErr
+
+	if _, err := d.Get(context.Background(), eng.ID); !errors.Is(err, expectedErr) {
+		t.Errorf("Get() err = %v, want %v", err, expectedErr)
+	}
+
+	if _, err := d.Status(context.Background()); !errors.Is(err, expectedErr) {
+		t.Errorf("Status() err = %v, want %v", err, expectedErr)
 	}
 }
 

@@ -155,7 +155,9 @@ func (d *Director) Remove(ctx context.Context, fragment string, opts RemoveOptio
 	// Observe rather than trust the stored row: lifecycle is never persisted,
 	// and refusing on a cached one would either block a removal that is fine or
 	// permit the orphaning this exists to prevent.
-	d.observe(ctx, engagement)
+	if err := d.observe(ctx, engagement); err != nil && !opts.Force {
+		return nil, err
+	}
 
 	result := &RemoveResult{
 		EngagementID: engagement.ID,
