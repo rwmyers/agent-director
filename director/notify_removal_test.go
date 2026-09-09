@@ -39,6 +39,12 @@ func removable(t *testing.T, now time.Time, runningIn string) (*Director, *locat
 		observation: harness.Observation{
 			Found: true, Lifecycle: harness.LifecycleDone, LastActivityAt: now,
 		},
+		// The director's own seat is a live conversation, separately from the
+		// finished engagement it is holding. Both are refs in the same harness
+		// and the ring path asks about each.
+		observations: map[string]harness.Observation{
+			"w6:p1": {Found: true, Lifecycle: harness.LifecycleIdle, LastActivityAt: now},
+		},
 	}
 	d := newTestDirector(t, base, now)
 	adapter := &locatingAdapter{fakeAdapter: base, here: runningIn}
@@ -162,7 +168,7 @@ func TestRemovalDoesNotRingAHostThatCannotBeWoken(t *testing.T) {
 	}
 }
 
-func TestRemovalIsSilentWhenNobodyIsAttached(t *testing.T) {
+func TestRemovalIsSilentWhenThereIsNoSeatToTellAbout(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
 
@@ -180,24 +186,43 @@ func TestRemovalIsSilentWhenNobodyIsAttached(t *testing.T) {
 		}
 	})
 
-	t.Run("the claim is older than the grace", func(t *testing.T) {
+	t.Run("the recorded seat is no longer a conversation the harness knows", func(t *testing.T) {
 		t.Parallel()
+		// Whoever attached is gone and the pane has been closed. Typing into
+		// that address is at best noise and at worst somebody else's screen —
+		// and unlike an old claim, this is the harness saying so.
 		d, adapter, engagement := removable(t, now, "")
-		if err := d.mutate(func(state *State) error {
-			state.AttachedAt = now.Add(-AttachGrace - time.Minute)
-			return nil
-		}); err != nil {
-			t.Fatalf("mutate() = %v, want no error", err)
-		}
+		adapter.observations["w6:p1"] = harness.Observation{Ref: "w6:p1", Found: false}
 		result := removeOne(t, d, engagement.ID)
 
-		// Whoever attached has walked away. Typing into that address is at
-		// best noise and at worst somebody else's screen.
-		if err := d.NotifyRemoved(context.Background(), []*RemoveResult{result}); !errors.Is(err, ErrNotAttached) {
-			t.Errorf("NotifyRemoved() = %v, want ErrNotAttached", err)
+		err := d.NotifyRemoved(context.Background(), []*RemoveResult{result})
+		if !errors.Is(err, ErrStaleHost) {
+			t.Errorf("NotifyRemoved() = %v, want ErrStaleHost", err)
+		}
+		// reportRing stays silent on this, so the refusal is the only place the
+		// reason is recorded and it has to name the address.
+		if err == nil || !strings.Contains(err.Error(), "w6:p1") {
+			t.Errorf("NotifyRemoved() = %v, want it to name the address it refused", err)
 		}
 		if sent := wakes(adapter.fakeAdapter); len(sent) != 0 {
 			t.Errorf("wakes = %d, want none", len(sent))
+		}
+	})
+
+	t.Run("a director that attached long ago is still told", func(t *testing.T) {
+		t.Parallel()
+		// The regression this file now guards. A removal is exactly the news a
+		// director that has been waiting for hours most needs, and the age of
+		// its claim says nothing about whether it is sitting there.
+		d, adapter, engagement := removable(t, now, "")
+		result := removeOne(t, d, engagement.ID)
+		d.Clock = func() time.Time { return now.Add(9 * time.Hour) }
+
+		if err := d.NotifyRemoved(context.Background(), []*RemoveResult{result}); err != nil {
+			t.Fatalf("NotifyRemoved() = %v, want a ring", err)
+		}
+		if sent := wakes(adapter.fakeAdapter); len(sent) != 1 {
+			t.Errorf("wakes = %d, want exactly one", len(sent))
 		}
 	})
 }

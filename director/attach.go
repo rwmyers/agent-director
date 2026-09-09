@@ -17,6 +17,21 @@ import (
 // face value and an old one is assumed abandoned. Half an hour is longer than a
 // pause for thought and shorter than a working session somebody walked away
 // from.
+//
+// It governs the claim and nothing else. It used to gate waking a director as
+// well, and that was wrong twice over: AttachedAt is written only by attach, so
+// a director half an hour into a working session was as stale as one that had
+// gone home, and the engagements most worth ringing about are the long ones
+// whose director has been waiting longest. Whether an address is safe to type
+// into is not a question about elapsed time — see notify.
+//
+// A clock is a weak proxy here too, and is known to be. What the claim actually
+// wants to know is whether the conversation sitting here is the same one that
+// attached, which is a question about identity that a duration can only guess
+// at. It stands for now because the collision it guards against is real and
+// nothing better is recorded yet; replacing it means recording an identity the
+// harness supplies and the agent cannot fabricate, which is a larger change
+// than retiring it from the wake path was.
 const AttachGrace = 30 * time.Minute
 
 // DirectorSummary is one director, as the attach decision sees it.

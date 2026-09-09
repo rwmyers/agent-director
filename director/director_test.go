@@ -40,6 +40,12 @@ type fakeAdapter struct {
 	spawns      []harness.SpawnRequest
 	sends       []harness.SendRequest
 	observation harness.Observation
+	// observations answers for particular refs, falling back to observation.
+	// It exists because a director's own seat and the engagements it dispatched
+	// are different conversations in the same harness, and the wake path now
+	// asks about both — a fake that gave one answer for every ref could not
+	// express a live director holding a finished engagement.
+	observations map[string]harness.Observation
 }
 
 func (f *fakeAdapter) Name() string                                    { return f.name }
@@ -60,7 +66,10 @@ func (f *fakeAdapter) Send(_ context.Context, req harness.SendRequest) error {
 	return f.sendErr
 }
 
-func (f *fakeAdapter) Get(context.Context, string) (harness.Observation, error) {
+func (f *fakeAdapter) Get(_ context.Context, ref string) (harness.Observation, error) {
+	if observation, ok := f.observations[ref]; ok {
+		return observation, f.getErr
+	}
 	return f.observation, f.getErr
 }
 

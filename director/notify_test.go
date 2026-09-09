@@ -167,19 +167,103 @@ func TestNotifyGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("a stale claim is not rung", func(t *testing.T) {
+	t.Run("a director that attached hours ago is still rung", func(t *testing.T) {
 		t.Parallel()
-		// Nobody is sitting there. Typing into it is at best noise, and at
-		// worst it is somebody else's screen now.
+		// The whole point of the change. A director waiting on long-running
+		// engagements does nothing that would refresh its claim, and the
+		// engagements most worth ringing about are exactly the ones whose
+		// director has been waiting longest. The old gate made that
+		// self-reinforcing: unrung, it stayed idle; idle, it looked stale.
 		d, adapter := wakeable(t, now)
 		engagement := spawnOne(t, d)
-		d.Clock = func() time.Time { return now.Add(AttachGrace + time.Minute) }
+		d.Clock = func() time.Time { return now.Add(9 * time.Hour) }
+
+		if _, err := d.Ask(context.Background(), engagement.ID, engagement.Token, "May I force-push?"); err != nil {
+			t.Fatalf("Ask() = %v, want no error", err)
+		}
+		if sent := wakes(adapter); len(sent) != 1 {
+			t.Errorf("wakes = %d, want exactly one — elapsed time must not gate a ring", len(sent))
+		}
+	})
+
+	t.Run("an address the harness no longer recognises is not rung, and says why", func(t *testing.T) {
+		t.Parallel()
+		// The hazard the clock was standing in for, asked directly. The pane
+		// has been closed; whatever holds that id next is not this director.
+		d, adapter := wakeable(t, now)
+		engagement := spawnOne(t, d)
+		adapter.observations = map[string]harness.Observation{
+			"w6:p1": {Ref: "w6:p1", Found: false},
+		}
+		// Terminal progress, so there is genuinely news to carry: the seat
+		// check is the last guard and only a ring that would otherwise be sent
+		// ever reaches it.
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, ReportOptions{Progress: "delivered"}); err != nil {
+			t.Fatalf("Report() = %v, want no error", err)
+		}
+
+		err := d.notify(context.Background(), engagement.ID)
+		if !errors.Is(err, ErrStaleHost) {
+			t.Errorf("notify() = %v, want ErrStaleHost", err)
+		}
+		if err == nil || !strings.Contains(err.Error(), "w6:p1") {
+			t.Errorf("notify() = %v, want it to name the address it refused", err)
+		}
+		if sent := wakes(adapter); len(sent) != 0 {
+			t.Errorf("wakes = %d, want none", len(sent))
+		}
+	})
+
+	t.Run("a seat whose conversation has ended is not rung", func(t *testing.T) {
+		t.Parallel()
+		// The address still parses and the harness still knows it, but nothing
+		// is attached to it. For herdr that is a pane back at a bare shell,
+		// where a prompt would be run rather than read.
+		d, adapter := wakeable(t, now)
+		engagement := spawnOne(t, d)
+		adapter.observations = map[string]harness.Observation{
+			"w6:p1": {Ref: "w6:p1", Found: true, Lifecycle: harness.LifecycleDone},
+		}
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, ReportOptions{Progress: "delivered"}); err != nil {
+			t.Fatalf("Report() = %v, want no error", err)
+		}
 
 		if err := d.notify(context.Background(), engagement.ID); !errors.Is(err, ErrStaleHost) {
 			t.Errorf("notify() = %v, want ErrStaleHost", err)
 		}
 		if sent := wakes(adapter); len(sent) != 0 {
 			t.Errorf("wakes = %d, want none", len(sent))
+		}
+	})
+
+	t.Run("a harness that will not say whether the seat is real is not rung", func(t *testing.T) {
+		t.Parallel()
+		// Declining to answer is not evidence the seat is fine, and a Send
+		// through the same unreachable harness would not land anyway. The
+		// refusal has to carry the harness failure rather than inventing a
+		// reason of its own.
+		d, adapter := wakeable(t, now)
+		engagement := spawnOne(t, d)
+		adapter.observations = map[string]harness.Observation{
+			// Terminal progress skips the observation, so the only Get in this
+			// run is the one asking about the seat.
+			"w6:p1": {Ref: "w6:p1", Found: true, Lifecycle: harness.LifecycleIdle},
+		}
+		if _, err := d.Report(context.Background(), engagement.ID, engagement.Token, ReportOptions{Progress: "delivered"}); err != nil {
+			t.Fatalf("Report() = %v, want no error", err)
+		}
+		if sent := wakes(adapter); len(sent) != 1 {
+			t.Fatalf("wakes = %d, want one before the harness goes away", len(sent))
+		}
+
+		adapter.getErr = errors.New("herdr is not running")
+		d.Clock = func() time.Time { return now.Add(time.Hour) }
+		err := d.notify(context.Background(), engagement.ID)
+		if !errors.Is(err, ErrStaleHost) || !strings.Contains(err.Error(), "herdr is not running") {
+			t.Errorf("notify() = %v, want ErrStaleHost carrying the harness failure", err)
+		}
+		if sent := wakes(adapter); len(sent) != 1 {
+			t.Errorf("wakes = %d, want no second wake", len(sent))
 		}
 	})
 

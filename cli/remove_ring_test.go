@@ -19,14 +19,21 @@ import (
 const hostPane = "host:pane"
 
 // attachTo writes a host onto the root's director, as `director attach` would
-// have done when a conversation claimed it.
+// have done when a conversation claimed it, and tells the harness that seat is
+// a live conversation.
 //
 // Written straight into the state file rather than run through attach, because
 // attach re-detects where THIS process is sitting — and the suite must not
 // assert about the herdr pane or Claude Code conversation that happens to be
 // running it.
-func attachTo(t *testing.T, root string, hosting harness.Hosting, ref string) {
+//
+// The seat is marked live because the ring path resolves the recorded address
+// against the harness before it types into it. A fixture that attached to an
+// address the harness reports as finished is describing a conversation that has
+// ended, which is a case this file tests deliberately rather than by accident.
+func attachTo(t *testing.T, root string, adapter *fleetAdapter, hosting harness.Hosting, ref string) {
 	t.Helper()
+	adapter.live[ref] = true
 	roots, err := director.ResolveRoots(root, root)
 	if err != nil {
 		t.Fatalf("ResolveRoots(%s) = %v", root, err)
@@ -64,7 +71,7 @@ func TestRemoveFromTheConsoleRingsTheAttachedDirector(t *testing.T) {
 	id := spawnEngagement(t, root, "the one it still believes in")
 	// herdr: a pane is a shell prompt that can be typed into, so something
 	// else can make this director take a turn.
-	attachTo(t, root, harness.Hosting{Background: true, Wake: true}, hostPane)
+	attachTo(t, root, adapter, harness.Hosting{Background: true, Wake: true}, hostPane)
 
 	stop := captureStdout(t)
 	err := runDirector(t, "remove", "--config", root, id)
@@ -92,7 +99,7 @@ func TestRemoveSaysWhenTheDirectorCannotBeWoken(t *testing.T) {
 	id := spawnEngagement(t, root, "the one it will go on believing in")
 	// Claude Code: it can background a command and be re-entered when that
 	// exits, and nothing can push a turn into it.
-	attachTo(t, root, harness.Hosting{Background: true, Wake: false}, "session-1")
+	attachTo(t, root, adapter, harness.Hosting{Background: true, Wake: false}, "session-1")
 
 	stop := captureStdout(t)
 	err := runDirector(t, "remove", "--config", root, id)
@@ -142,7 +149,7 @@ func TestRemovingSeveralRingsOnce(t *testing.T) {
 	root, adapter := fleetRoot(t)
 	first := spawnEngagement(t, root, "the first to forget")
 	second := spawnEngagement(t, root, "the second to forget")
-	attachTo(t, root, harness.Hosting{Background: true, Wake: true}, hostPane)
+	attachTo(t, root, adapter, harness.Hosting{Background: true, Wake: true}, hostPane)
 
 	stop := captureStdout(t)
 	err := runDirector(t, "remove", "--config", root, first, second)
