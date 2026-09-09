@@ -36,6 +36,8 @@ they belong in version control, and no agent should be making them.
 
 ```sh
 make install
+# if this project spawns into a harness director does not ship, put its
+# director-harness-<name> executable on $PATH now — see "Adding a harness"
 cd your-project
 director init                       # asks which harness, writes .director/ with starter workflows
                                     # safe to repeat: it uses the director already
@@ -43,6 +45,15 @@ director init                       # asks which harness, writes .director/ with
 director install                    # put the director skills where your harness finds them
 $EDITOR .director/workflows/*.conf  # make the task types yours
 ```
+
+[Adding a harness](#adding-a-harness) below says how to write or install one.
+It goes before `init` because init offers only the harnesses it can find at the
+moment it runs, and writes that answer into `.director/director.conf`.
+Installing one afterwards is not fatal — `director harnesses` lists it and
+`director spawn --harness` reaches it — but init will never rewrite a
+`director.conf` you now own, so you change the `harness =` line yourself and
+re-run `director install` to place the plugin's skills. Re-running `director
+init` prints the line to change rather than changing it.
 
 **Starting a directing session — an agent, every conversation.** `director
 attach` works out whether to take over a director that is already running or
