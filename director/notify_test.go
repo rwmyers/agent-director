@@ -289,26 +289,35 @@ func TestNotifyGuards(t *testing.T) {
 		}
 	})
 
-	t.Run("a second wake inside the floor is dropped", func(t *testing.T) {
+	t.Run("a second stall inside the floor is dropped", func(t *testing.T) {
 		t.Parallel()
-		// The task reports every 5m, so that is the floor: a fleet reporting in
-		// unison must not type a dozen lines into a live conversation.
+		// The chatter the floor was built for, and the thing that must not
+		// change: the task reports every 5m, so that is the floor, and a fleet
+		// going quiet in unison must not type a dozen lines into a live
+		// conversation. A stall is news the director will see on its next turn
+		// anyway, and it repeats — which is what makes it meterable.
 		d, adapter := wakeable(t, now)
 		first := spawnOne(t, d)
 		second := spawnOne(t, d)
 
-		if _, err := d.Ask(context.Background(), first.ID, first.Token, "one?"); err != nil {
-			t.Fatalf("Ask() = %v, want no error", err)
+		// Both agents have said nothing since they were spawned and the
+		// harness has seen nothing either, which past the stall threshold is
+		// the definition of stalled.
+		d.Clock = func() time.Time { return now.Add(16 * time.Minute) }
+
+		if err := d.notify(context.Background(), first.ID); err != nil {
+			t.Fatalf("notify(first) = %v, want a wake", err)
 		}
-		if _, err := d.Ask(context.Background(), second.ID, second.Token, "two?"); err != nil {
-			t.Fatalf("Ask() = %v, want no error", err)
+		err := d.notify(context.Background(), second.ID)
+		if !errors.Is(err, ErrWokenRecently) {
+			t.Errorf("notify(second) = %v, want ErrWokenRecently", err)
 		}
 		if sent := wakes(adapter); len(sent) != 1 {
 			t.Fatalf("wakes = %d, want one — the second is inside the floor", len(sent))
 		}
 
 		// Past the floor, the next piece of news gets through.
-		d.Clock = func() time.Time { return now.Add(6 * time.Minute) }
+		d.Clock = func() time.Time { return now.Add(22 * time.Minute) }
 		if err := d.notify(context.Background(), second.ID); err != nil {
 			t.Fatalf("notify() past the floor = %v, want a wake", err)
 		}
@@ -357,6 +366,94 @@ func TestNotifyGuards(t *testing.T) {
 		// conversation with identical retries.
 		if d.State.Host.LastWokenAt.IsZero() {
 			t.Error("a failed wake was not recorded, so it would be retried on every report")
+		}
+	})
+}
+
+// TestTheFloorDoesNotMeterNews covers the news the floor must never drop.
+//
+// The floor is per-director: any engagement's ring arms it for every other
+// engagement, so what it drops is always somebody else's news. For chatter that
+// is the point. For a finished agent or a stopped one it is a message that had
+// no second chance — a blocked agent will never report again, so the ring it
+// did not get was the only signal there was.
+func TestTheFloorDoesNotMeterNews(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+
+	// armFloor rings the director about one engagement, so that anything the
+	// next engagement says lands inside the floor.
+	armFloor := func(t *testing.T, d *Director, adapter *fakeAdapter, engagement *Engagement) {
+		t.Helper()
+		if _, err := d.Ask(context.Background(), engagement.ID, engagement.Token, "first?"); err != nil {
+			t.Fatalf("Ask() = %v, want no error", err)
+		}
+		if sent := wakes(adapter); len(sent) != 1 {
+			t.Fatalf("wakes = %d, want one to arm the floor", len(sent))
+		}
+		if d.State.Host.LastWokenAt.IsZero() {
+			t.Fatal("the floor was not armed, so this proves nothing")
+		}
+	}
+
+	t.Run("a finished engagement rings moments after another wake", func(t *testing.T) {
+		t.Parallel()
+		// I am finished is said once and is what the director is waiting on in
+		// order to start the next thing. Metered, it is simply lost.
+		d, adapter := wakeable(t, now)
+		first := spawnOne(t, d)
+		second := spawnOne(t, d)
+		armFloor(t, d, adapter, first)
+
+		if _, err := d.Report(context.Background(), second.ID, second.Token, ReportOptions{Progress: "delivered", Message: "done"}); err != nil {
+			t.Fatalf("Report() = %v, want no error", err)
+		}
+		if sent := wakes(adapter); len(sent) != 2 {
+			t.Fatalf("wakes = %d, want two — a completion is not chatter", len(sent))
+		}
+		if !strings.Contains(wakes(adapter)[1].Text, second.ID) {
+			t.Errorf("wake text = %q, want the finished engagement", wakes(adapter)[1].Text)
+		}
+	})
+
+	t.Run("an engagement blocking on a question rings moments after another wake", func(t *testing.T) {
+		t.Parallel()
+		// The worst case. The agent has stopped on purpose and will not report
+		// again, so the dropped ring is not a late ring — it is the only one.
+		d, adapter := wakeable(t, now)
+		first := spawnOne(t, d)
+		second := spawnOne(t, d)
+		armFloor(t, d, adapter, first)
+
+		if _, err := d.Ask(context.Background(), second.ID, second.Token, "May I force-push?"); err != nil {
+			t.Fatalf("Ask() = %v, want no error", err)
+		}
+		if sent := wakes(adapter); len(sent) != 2 {
+			t.Fatalf("wakes = %d, want two — a blocked agent is not chatter", len(sent))
+		}
+	})
+
+	t.Run("an agent the harness reports stopped rings moments after another wake", func(t *testing.T) {
+		t.Parallel()
+		// The third way to be blocked: no ask in the state file, the harness
+		// simply reporting the agent stopped waiting on a human. Nothing but
+		// the harness knows this, which is why the floor has to be applied
+		// after the observation rather than in front of it.
+		d, adapter := wakeable(t, now)
+		first := spawnOne(t, d)
+		second := spawnOne(t, d)
+		adapter.observations = map[string]harness.Observation{
+			"w6:p1":            {Found: true, Lifecycle: harness.LifecycleWorking, LastActivityAt: now},
+			"ref-" + first.ID:  {Found: true, Lifecycle: harness.LifecycleWorking, LastActivityAt: now},
+			"ref-" + second.ID: {Found: true, Lifecycle: harness.LifecycleBlocked, LastActivityAt: now},
+		}
+		armFloor(t, d, adapter, first)
+
+		if err := d.notify(context.Background(), second.ID); err != nil {
+			t.Fatalf("notify() = %v, want a wake for a stopped agent", err)
+		}
+		if sent := wakes(adapter); len(sent) != 2 {
+			t.Errorf("wakes = %d, want two", len(sent))
 		}
 	})
 }

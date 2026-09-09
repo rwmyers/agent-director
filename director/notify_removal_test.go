@@ -103,8 +103,49 @@ func TestRemovalRingsAnAttachedDirector(t *testing.T) {
 			t.Errorf("ring = %q, want it to contain %q", sent[0].Text, want)
 		}
 	}
+	// And it does not arm the floor: see TestARemovalDoesNotSilenceTheFleet.
+	if !d.State.Host.LastWokenAt.IsZero() {
+		t.Error("the removal armed the floor, which would meter news it does not itself pay into")
+	}
+}
+
+// TestARemovalDoesNotSilenceTheFleet is the other half of NotifyRemoved's
+// exemption from the floor.
+//
+// An action that exempts itself from a rate limit but still charges it spends a
+// budget it does not pay into, and the traffic only ever flows one way: a
+// person clearing finished rows at the console could silence a heartbeat's
+// worth of the fleet's news, while no amount of fleet news can ever silence a
+// removal.
+func TestARemovalDoesNotSilenceTheFleet(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 9, 7, 12, 0, 0, 0, time.UTC)
+	d, adapter, finished := removable(t, now, "")
+	// A second engagement, whose process also ended — without reaching the
+	// terminal progress its task declares, which is abandonment. That is news
+	// the director must act on, and it is metered rather than exempt, so the
+	// floor is the only thing that could stop it.
+	abandoned := spawnOne(t, d)
+
+	result := removeOne(t, d, finished.ID)
+	if err := d.NotifyRemoved(context.Background(), []*RemoveResult{result}); err != nil {
+		t.Fatalf("NotifyRemoved() = %v, want a ring", err)
+	}
+
+	if err := d.notify(context.Background(), abandoned.ID); err != nil {
+		t.Fatalf("notify() straight after a removal = %v, want a wake", err)
+	}
+	sent := wakes(adapter.fakeAdapter)
+	if len(sent) != 2 {
+		t.Fatalf("wakes = %d, want two — the removal must not have silenced the fleet", len(sent))
+	}
+	if !strings.Contains(sent[1].Text, abandoned.ID) {
+		t.Errorf("second ring = %q, want it to be about %s", sent[1].Text, abandoned.ID)
+	}
+	// The engagement's own ring does arm the floor, because that is what the
+	// floor measures: how recently an engagement rang.
 	if d.State.Host.LastWokenAt.IsZero() {
-		t.Error("the ring was not recorded, so the floor for ordinary wakes would not count it")
+		t.Error("an engagement's ring was not recorded, so the floor would never apply")
 	}
 }
 

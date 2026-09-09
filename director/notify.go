@@ -62,16 +62,24 @@ var (
 // open, and is running at the moment the news exists. Nothing is left behind
 // when it exits.
 //
-// # The guards, in the order they are cheap
+// # The guards, in order
 //
 // A host that declares no wake, or that recorded no address, stops here for
-// nothing. The floor stops a fleet reporting in unison from typing a dozen
-// lines into a live conversation. Only then is the engagement observed, because
-// that costs a harness call, and only news the director can act on is worth a
-// turn. Last of all, once a ring is genuinely about to happen, the recorded
-// address is resolved against its harness — see addressResolves — because that
-// is a second harness call and it is only worth paying for a wake that would
-// otherwise be sent.
+// nothing. Then the engagement is observed, because only news the director can
+// act on is worth a turn. Only then does the floor apply, and only to news that
+// is not exempt — see exemptFromFloor. Last of all, once a ring is genuinely
+// about to happen, the recorded address is resolved against its harness — see
+// addressResolves — because that is a second harness call and it is only worth
+// paying for a wake that would otherwise be sent.
+//
+// The floor used to come first, on the reasoning that it was the cheaper check
+// and so belonged before the harness call. That put a rate limit in front of
+// the question it was supposed to be rate-limiting: it dropped wakes before
+// anything had decided whether this was news worth waking for, and the news it
+// dropped was completions and blocked questions, which are the two things a
+// director must not miss. Deciding first and metering second costs one
+// observation per report that lands inside a floor — see exemptFromFloor for
+// what that observation buys.
 //
 // # What is deliberately not a guard
 //
@@ -103,10 +111,6 @@ func (d *Director) notify(ctx context.Context, engagementID string) error {
 	if err != nil {
 		return err
 	}
-	if floor := wakeFloor(task); !host.LastWokenAt.IsZero() && now.Sub(host.LastWokenAt) < floor {
-		return fmt.Errorf("%w: %s ago, and the floor for task %q is %s",
-			ErrWokenRecently, now.Sub(host.LastWokenAt).Round(time.Second), task.Name, floor)
-	}
 
 	worth, err := worthWaking(ctx, d, engagement, task)
 	if err != nil {
@@ -114,6 +118,13 @@ func (d *Director) notify(ctx context.Context, engagementID string) error {
 	}
 	if !worth {
 		return fmt.Errorf("%w: %s is %s", ErrNothingToWakeFor, engagementID, engagement.Health)
+	}
+
+	if !exemptFromFloor(engagement, task) {
+		if floor := wakeFloor(task); !host.LastWokenAt.IsZero() && now.Sub(host.LastWokenAt) < floor {
+			return fmt.Errorf("%w: %s ago, and the floor for task %q is %s",
+				ErrWokenRecently, now.Sub(host.LastWokenAt).Round(time.Second), task.Name, floor)
+		}
 	}
 
 	adapter, err := d.lookup(host.Harness)
@@ -230,6 +241,48 @@ func worthWaking(ctx context.Context, d *Director, engagement *Engagement, task 
 	return engagement.Health.NeedsDirector(), nil
 }
 
+// exemptFromFloor reports whether this news is too important to meter.
+//
+// The floor exists for a fleet's ordinary chatter — several engagements going
+// quiet or stalling at once, none of which is urgent and all of which a
+// director will see on its next turn. Two kinds of news are not that.
+//
+// A terminal report is the agent saying it has finished. It is the single most
+// useful message an engagement ever sends, it is said exactly once, and the
+// director is waiting on it in order to start the next thing.
+//
+// A blocked engagement is worse. The agent is *stopped* — on its own question,
+// or on something the harness can see it waiting for — and it will never report
+// again. The ring it does not get is not a ring that arrives late; it is the
+// only signal there was, and the engagement sits there until somebody looks by
+// hand.
+//
+// Neither can arrive in a flood: an engagement finishes once and blocks on one
+// question at a time, so exempting them does not reopen the hazard the floor
+// was built for. What is still metered is stalls, abandonments, and completions
+// of tasks that declare no finish line — the news that repeats.
+//
+// # It costs an observation
+//
+// Health is only known after observe, so asking this at all means the harness
+// call has already been paid for even when the floor then drops the wake. That
+// is a real cost: inside a floor, every report now observes where it used to
+// return early, which is at most one Get per engagement per ring — the same
+// call `director status` makes for each row, once, per ring.
+//
+// It is not avoidable while the answer stays honest. Terminal progress and a
+// pending ask are both free to check, but the third way to be blocked is the
+// harness reporting the agent stopped waiting on a human, and nothing but the
+// harness knows that. Metering before the observation would buy the call back
+// by silently narrowing "blocked" to "blocked in a way we could see for free",
+// which is the class of engagement least able to complain about being missed.
+func exemptFromFloor(engagement *Engagement, task Task) bool {
+	if task.Terminal != "" && engagement.Progress == task.Terminal {
+		return true
+	}
+	return engagement.Health == HealthBlocked
+}
+
 // wakeFloor is the shortest gap between two wakes.
 //
 // The task's own heartbeat is the natural unit: it is what the workflow said
@@ -237,6 +290,13 @@ func worthWaking(ctx context.Context, d *Director, engagement *Engagement, task 
 // waking faster than the work produces news. A task with no heartbeat has
 // nothing to measure against, and the stall threshold — which is what silence
 // is judged by everywhere else — stands in.
+//
+// It is per-director rather than per-engagement, because the noise it exists to
+// stop is a fleet speaking at once and not one engagement speaking twice. That
+// is also why it has to be applied to a decision rather than in place of one:
+// any engagement's ring arms it for every other engagement, so whatever it
+// drops, it drops from somebody who was not the one making the noise. What it
+// does not apply to is exemptFromFloor's business.
 func wakeFloor(task Task) time.Duration {
 	if task.ReportOn.Every > 0 {
 		return task.ReportOn.Every
@@ -287,14 +347,31 @@ func wakeText(engagement *Engagement) string {
 // conversation for a single decision, which is the failure this is under
 // instructions not to reproduce.
 //
-// # No floor
+// # No floor, and it does not arm one either
 //
 // notify holds a floor because a fleet reporting in unison would otherwise
 // type a dozen lines into the conversation. Removals are not a fleet: they are
 // a person at a keyboard, at human rate, and a floor here would silently drop
-// exactly the message whose loss this exists to prevent. The wake is still
-// recorded, because it is a line typed into the conversation and the floor for
-// everything else should count it.
+// exactly the message whose loss this exists to prevent.
+//
+// This used to record the wake anyway, on the reasoning that it is a line typed
+// into the conversation and the floor for everything else should count it. That
+// reads the floor as a budget on lines, and it is not one — it is the task's own
+// heartbeat, the rate at which that engagement's work produces news. A removal
+// has no task and no heartbeat, so there is no interval it could arm that would
+// mean anything; the one it armed was whichever task happened to report next.
+//
+// The asymmetry is the rest of it. An action that exempts itself from a limit
+// but still charges it spends a budget it does not pay into, and the traffic
+// only ever flows one way: a person clearing three finished rows at the console
+// could silence a heartbeat's worth of stalls across the whole fleet, while no
+// number of stalls can ever silence a removal. Removals are human-rate by
+// construction — the same fact that earns the exemption — so the cost of not
+// arming is two lines back to back in the worst case, which is what a person
+// doing two things gets everywhere else.
+//
+// LastWokenAt keeps its meaning under this: when an engagement last rang this
+// director, which is exactly what the floor is measured against.
 //
 // # What is deliberately not done
 //
@@ -316,7 +393,6 @@ func (d *Director) NotifyRemoved(ctx context.Context, removed []*RemoveResult) e
 		return fmt.Errorf("%w: %s", ErrOwnRemoval, host.Describe())
 	}
 
-	now := d.now()
 	if !host.Known() {
 		return fmt.Errorf("%w: no host was recorded", ErrNotAttached)
 	}
@@ -346,17 +422,10 @@ func (d *Director) NotifyRemoved(ctx context.Context, removed []*RemoveResult) e
 		return err
 	}
 
-	// Recorded whether or not the send worked, on the same terms as notify: an
-	// attempt is an attempt, and a broken address that is retried is how a
-	// conversation fills up with identical lines.
-	sendErr := adapter.Send(ctx, harness.SendRequest{Ref: host.Ref, Text: removalText(removed)})
-	if err := d.mutate(func(state *State) error {
-		state.Host.LastWokenAt = now
-		return nil
-	}); err != nil {
-		return err
-	}
-	return sendErr
+	// Not recorded: see "No floor, and it does not arm one either" above. There
+	// is no retry to guard against either — one `director remove` is one call,
+	// and the CLI reports a failed ring to the person rather than trying again.
+	return adapter.Send(ctx, harness.SendRequest{Ref: host.Ref, Text: removalText(removed)})
 }
 
 // selfInitiated reports whether the command running now is running inside the
