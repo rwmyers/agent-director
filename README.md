@@ -55,29 +55,26 @@ Installing one afterwards is not fatal — `director harnesses` lists it and
 re-run `director install` to place the plugin's skills. Re-running `director
 init` prints the line to change rather than changing it.
 
-**Starting a directing session — an agent, every conversation.** `director
-attach` works out whether to take over a director that is already running or
-start a fresh one, and says why.
+**Starting a directing session — an agent, every conversation.** Open a
+conversation with your coding agent and invoke the **`/director`** skill.
+That is the whole of it; `director install` above is what put the skill where
+your harness looks for it. The skill's first step is the agent running
+`director attach` on your behalf.
 
-```sh
-director attach
-# attached to director dir_b3a3e06f (lead), workflow "goproj"
-# because: lead has 1 engagement(s) waiting and nobody tending them
-#
-# You have inherited 1 engagement(s). Deal with anything waiting before starting new work:
-# ID            HEALTH   LIFECYCLE  PROGRESS  SILENT  TITLE
-# eng_9e6acceb  blocked  working    editing   14m     migrate the config parser
+```
+attached to director dir_b3a3e06f (lead), workflow "goproj"
+because: lead has 1 engagement(s) waiting and nobody tending them
+
+You have inherited 1 engagement(s). Deal with anything waiting before starting new work:
+ID            HEALTH   LIFECYCLE  PROGRESS  SILENT  TITLE
+eng_9e6acceb  blocked  working    editing   14m     migrate the config parser
 ```
 
-It attaches when exactly one director is unattended, prefers whoever has work
-waiting, creates a new one when every director is already being driven by
-another conversation — and **refuses to choose** when two unattended directors
-both have work, because nothing distinguishes them and picking wrong means
-quietly operating on somebody else's fleet.
-
-Attaching records a claim that expires after 30 minutes, which is the only
-signal available that another conversation is already here: two conversations
-on one fleet would both spawn, both answer, and share a read cursor.
+**Delegating a piece of work — `/new-engagement`.** Once a director is
+attached, that skill is how work gets handed out. It turns a loose request into
+one well-formed spawn: choosing the task type from this project's workflow,
+getting out of you the parts of the brief you left unsaid, and dispatching a
+single engagement rather than one per clause.
 
 ## What it is, and is not
 
