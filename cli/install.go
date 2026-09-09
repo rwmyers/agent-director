@@ -124,8 +124,13 @@ func newInstallCmd() *cobra.Command {
 	var dryRun bool
 
 	cmd := &cobra.Command{
-		Use:   "install",
-		Short: "Install the director skills for a harness on this machine",
+		Use: "setup",
+		// install is what this command was called first, and it is in the
+		// shipped instructions, in the skills, and in people's setup scripts.
+		// The rename changes the name, not what already works, so the old word
+		// keeps resolving here silently rather than with a deprecation notice.
+		Aliases: []string{"install"},
+		Short:   "Install the director skills for a harness on this machine",
 		Long: `Copies the shipped skills where a harness will find them, so an agent
 can pick them up as /director.
 

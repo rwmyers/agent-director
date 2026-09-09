@@ -42,7 +42,7 @@ cd your-project
 director init                       # asks which harness, writes .director/ with starter workflows
                                     # safe to repeat: it uses the director already
                                     # registered here. `--new` adds a second one.
-director install                    # put the director skills where your harness finds them
+director setup                      # put the director skills where your harness finds them
 $EDITOR .director/workflows/*.conf  # make the task types yours
 ```
 
@@ -52,12 +52,12 @@ moment it runs, and writes that answer into `.director/director.conf`.
 Installing one afterwards is not fatal — `director harnesses` lists it and
 `director spawn --harness` reaches it — but init will never rewrite a
 `director.conf` you now own, so you change the `harness =` line yourself and
-re-run `director install` to place the plugin's skills. Re-running `director
+re-run `director setup` to place the plugin's skills. Re-running `director
 init` prints the line to change rather than changing it.
 
 **Starting a directing session — an agent, every conversation.** Open a
 conversation with your coding agent and invoke the **`/director`** skill.
-That is the whole of it; `director install` above is what put the skill where
+That is the whole of it; `director setup` above is what put the skill where
 your harness looks for it. The skill's first step is the agent running
 `director attach` on your behalf.
 
@@ -234,7 +234,7 @@ them deliberately and says which.
 ## Commands
 
 **Setup** — `init` · `attach` · `where` · `workflows` · `tasks` · `directors` ·
-`retire` · `harnesses` · `skills` · `install`
+`retire` · `harnesses` · `skills` · `setup` (also answers to `install`)
 
 **Directing** — `spawn` · `status` · `read` · `send` · `answer` · `nudge` ·
 `stop` · `resume` · `note`

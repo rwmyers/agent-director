@@ -46,7 +46,7 @@ func newSkillsCmd() *cobra.Command {
 		Short: "Show the director instructions, or where they are installed",
 		Long: `The shipped skills tell an agent how to act as a director.
 
-A skill-aware harness loads them from disk after "director install". An agent
+A skill-aware harness loads them from disk after "director setup". An agent
 with only a shell can read the same text here:
 
     director skills --cat director`,

@@ -70,7 +70,7 @@ unrestricted agents, and director will only use it for unrestricted scopes.
 #### `skills` — optional
 
 Where director's skills belong for your harness. Declare it and `director
-install` offers your harness as a target, with no change to director itself.
+setup` offers your harness as a target, with no change to director itself.
 
 ```json
 {"api_version": 1, "name": "demo", "version": "0.1.0", "enforces": [],
@@ -97,7 +97,7 @@ Omit the whole block if your harness has no place for skills. director then
 passes over you silently rather than offering a target it cannot write, which is
 an ordinary answer — the built-in herdr adapter gives it, because herdr launches
 somebody else's agent in a pane and that agent loads skills from its own harness.
-Naming you to `director install --host` still gets a straight answer: it says you
+Naming you to `director setup --host` still gets a straight answer: it says you
 are a harness director can drive rather than one skills are installed into, and
 points at the harnesses that are. Declaring only one of the two directories is
 fine too; the other scope is simply not offered.

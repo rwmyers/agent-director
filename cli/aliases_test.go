@@ -96,3 +96,57 @@ func TestRemoveAdvertisesItsAliases(t *testing.T) {
 		}
 	}
 }
+
+// TestSetupOwnsInstall pins the rename of `install` to `setup`, in both
+// directions.
+//
+// `install` is in the shipped getting-started instructions and in people's
+// setup scripts, so it has to keep resolving to the same command; and `setup`
+// has to stay this command's, because a word that reads as "set this project
+// up" pointing anywhere else is the same silent shadowing the uniqueness guard
+// above exists to catch.
+func TestSetupOwnsInstall(t *testing.T) {
+	const alias = "install"
+
+	setup := findCommand(t, "setup")
+	if !slices.Contains(setup.Aliases, alias) {
+		t.Errorf("director setup answers to %v, want it to include %q", setup.Aliases, alias)
+	}
+
+	// Both words dispatch, rather than merely being declared.
+	for _, spoken := range []string{"setup", alias} {
+		found, _, err := newRootCmd().Find([]string{spoken})
+		if err != nil {
+			t.Fatalf("Find(%q) = %v, want it to resolve", spoken, err)
+		}
+		if found.Name() != "setup" {
+			t.Errorf("director %s resolves to %q, want %q", spoken, found.Name(), "setup")
+		}
+	}
+}
+
+// TestSetupBelongsToSetupAlone is the half of the rename that a later change
+// could undo without noticing: `setup` was free when this command took it, and
+// nothing stops another command claiming it as a name or an alias tomorrow.
+// Cobra would resolve one of the two and say nothing.
+func TestSetupBelongsToSetupAlone(t *testing.T) {
+	for _, cmd := range newRootCmd().Commands() {
+		if cmd.Name() == "setup" {
+			continue
+		}
+		if slices.Contains(spokenNames(cmd), "setup") {
+			t.Errorf("director %s also answers to %q, want it to belong to setup alone", cmd.Name(), "setup")
+		}
+	}
+}
+
+// TestSetupAdvertisesItsAlias checks `director setup --help` names `install`,
+// so somebody who had the old word in their fingers can see where it went
+// without reading the source.
+func TestSetupAdvertisesItsAlias(t *testing.T) {
+	setup := findCommand(t, "setup")
+	help := setup.UsageString()
+	if !strings.Contains(help, "install") {
+		t.Errorf("director setup --help does not mention its alias %q:\n%s", "install", help)
+	}
+}

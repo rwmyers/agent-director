@@ -164,7 +164,7 @@ later would leave a live fleet that nothing could describe.`,
 			fmt.Printf("     Each task's prompt is what an agent is actually told. `director tasks`\n")
 			fmt.Printf("     lists what you have; `director tasks <name>` shows one in full.\n\n")
 			fmt.Printf("  2. Install the director skills so your harness can pick them up:\n\n")
-			fmt.Printf("       director install\n\n")
+			fmt.Printf("       director setup\n\n")
 			fmt.Printf("  3. Then, in an agent conversation, start directing:\n\n")
 			fmt.Printf("       director attach\n\n")
 			fmt.Printf("     That decides whether to take over a running director or start one,\n")
@@ -660,7 +660,7 @@ This is what can be driven, which is not the same set as what skills can be
 installed for — driving needs a working protocol, installing needs somewhere to
 put a skill. A harness marked DISPLAY shows another harness's conversation
 rather than being one, so it reads no skills of its own: install for the agent
-you run inside it, and ` + "`director install`" + ` names the harnesses that are
+you run inside it, and ` + "`director setup`" + ` names the harnesses that are
 targets.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
