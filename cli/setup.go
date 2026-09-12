@@ -59,13 +59,18 @@ in it.
 
 Skills first. Asks which harness(es) to install for and whether to install for
 this project or for every project on this machine, then copies the shipped
-skills so an agent can pick them up as /director. The harnesses offered are the
-ones with somewhere to put a skill, which is not the set director can drive —
-` + "`director harnesses`" + ` lists that. A harness that displays another harness's
-conversation reads no skills of its own, so install for the agent you run
-inside it instead. Nothing about the skills is written into .director/: they
-are the director's operating instructions and ship with the binary, so to
-change them, fork the file and point your harness at your copy.
+skills so an agent can pick them up as /director. Project-scope skills go into
+the project the workflow is going into — the directory named by --dir, or typed
+or accepted at the location question — so that both halves land in the same
+repository wherever setup is run from. Under --global or --config the location
+is a root rather than a project, and project-scope skills go under the current
+directory instead. The harnesses offered are the ones with somewhere to put a
+skill, which is not the set director can drive — ` + "`director harnesses`" + ` lists
+that. A harness that displays another harness's conversation reads no skills of
+its own, so install for the agent you run inside it instead. Nothing about the
+skills is written into .director/: they are the director's operating
+instructions and ship with the binary, so to change them, fork the file and
+point your harness at your copy.
 
 Then the workflow. A workflow defines the task types a director can spawn,
 their permissions and their progress vocabularies, and a director is bound to
@@ -75,8 +80,9 @@ there is not one, copies the starter workflows into it, asks which harness this
 project spawns into, and registers a director bound to the starter workflow.
 --dir answers the location question with a directory, --global answers it with
 the user root (~/.config/director) for a machine-wide setup, and --config names
-a root outright. --global says nothing about --scope: where the skills go and
-where the workflow goes are separate questions.
+a root outright. --global says nothing about --scope: whether the skills are
+project-wide or machine-wide is a separate question from where the workflow
+goes.
 
 Running it again is safe: an established root is left exactly as it is and the
 director already registered there is adopted, so a setup script can run
@@ -115,13 +121,22 @@ writing anything if one is missing.`,
 			if err != nil {
 				return err
 			}
-			roots, ok, err := resolveSite(flags, ask)
+			site, ok, err := resolveSite(flags, ask)
 			if err != nil {
 				return err
 			}
 			if !ok {
 				fmt.Println("No location chosen, so nothing was set up.")
 				return nil
+			}
+			roots := site.roots
+			// Project-scope skills belong to the project the workflow is
+			// going into, when the location named one. A root named outright
+			// says nothing about which project that is, so the skills stay
+			// where setup was run.
+			skillsRoot := cwd
+			if site.project != "" {
+				skillsRoot = site.project
 			}
 			pending, err := pendingStarters(roots.Primary, force)
 			if err != nil {
@@ -142,12 +157,12 @@ writing anything if one is missing.`,
 			}
 
 			// Writes, in the order the help text promises them.
-			installed, err := installSkills(chosenHosts, chosenScope, cwd, dryRun)
+			installed, err := installSkills(chosenHosts, chosenScope, skillsRoot, dryRun)
 			if err != nil {
 				return err
 			}
 			if !opts.asJSON {
-				reportSkills(installed, cwd, dryRun)
+				reportSkills(installed, skillsRoot, dryRun)
 			}
 
 			if dryRun {
@@ -249,9 +264,9 @@ writing anything if one is missing.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&scope, "scope", "", "where the skills go: project | global (default: ask)")
+	cmd.Flags().StringVar(&scope, "scope", "", "where the skills go: project (under the workflow's directory) | global (default: ask)")
 	cmd.Flags().StringSliceVar(&hostNames, "host", nil, "harness to install skills for, repeatable (default: ask)")
-	cmd.Flags().StringVar(&dir, "dir", "", "directory to install the workflow into, as <dir>/.director (default: ask, suggesting the current directory)")
+	cmd.Flags().StringVar(&dir, "dir", "", "directory to install the workflow into, as <dir>/.director; project-scope skills go under it too (default: ask, suggesting the current directory)")
 	cmd.Flags().BoolVar(&global, "global", false, "install the workflow into the user root rather than a project directory")
 	cmd.Flags().StringVar(&harnessName, "harness", "", "harness the workflow spawns on, skipping the question (default: ask)")
 	cmd.Flags().StringVar(&workflow, "workflow", "", "workflow to bind the director to (default: default)")
@@ -304,11 +319,11 @@ func requireAnswersUpFront(ask prompter, scope string, hosts []string, harnessNa
 	case harnessName == "":
 		// The location is known, so whether the harness is needed is too: it
 		// is only written into a director.conf that does not exist yet.
-		roots, _, err := resolveSite(flags, ask)
+		site, _, err := resolveSite(flags, ask)
 		if err != nil {
 			return err
 		}
-		pending, err := pendingStarters(roots.Primary, force)
+		pending, err := pendingStarters(site.roots.Primary, force)
 		if err != nil {
 			return err
 		}
@@ -358,6 +373,17 @@ func (f siteFlags) named() (bool, error) {
 	return len(given) == 1 || os.Getenv(director.EnvRoot) != "", nil
 }
 
+// site is the answer to the location question.
+type site struct {
+	roots director.Roots
+	// project is the directory the workflow's root sits in, when the answer
+	// was a project directory: --dir, or the path typed or accepted at the
+	// question. It is where project-scope skills go. Empty when the answer
+	// named a root outright — --global, --config or DIRECTOR_ROOT — because a
+	// root says nothing about which project's skills these are.
+	project string
+}
+
 // resolveSite decides where `director setup` installs the workflow.
 //
 // Unlike every other command, setup creates rather than resolves, and one part
@@ -376,49 +402,49 @@ func (f siteFlags) named() (bool, error) {
 //
 // The bool is whether a location was chosen at all: backing out of the
 // question is a normal outcome rather than a failure.
-func resolveSite(flags siteFlags, ask prompter) (director.Roots, bool, error) {
+func resolveSite(flags siteFlags, ask prompter) (site, bool, error) {
 	if _, err := flags.named(); err != nil {
-		return director.Roots{}, false, err
+		return site{}, false, err
 	}
 	wd, err := os.Getwd()
 	if err != nil {
-		return director.Roots{}, false, err
+		return site{}, false, err
 	}
 	switch {
 	case opts.config != "":
 		roots, err := director.ResolveRoots(opts.config, wd)
-		return roots, true, err
+		return site{roots: roots}, true, err
 	case flags.global:
 		user := director.UserRoot()
 		if user == "" {
-			return director.Roots{}, false, errors.New("cannot work out the user root: neither $XDG_CONFIG_HOME nor a home directory is set")
+			return site{}, false, errors.New("cannot work out the user root: neither $XDG_CONFIG_HOME nor a home directory is set")
 		}
 		roots, err := director.ResolveRoots(user, wd)
-		return roots, true, err
+		return site{roots: roots}, true, err
 	case flags.dir != "":
 		here, err := filepath.Abs(flags.dir)
 		if err != nil {
-			return director.Roots{}, false, err
+			return site{}, false, err
 		}
 		roots, err := director.ResolveRoots(filepath.Join(here, director.ProjectDirName), wd)
-		return roots, true, err
+		return site{roots: roots, project: here}, true, err
 	case os.Getenv(director.EnvRoot) != "":
 		roots, err := director.ResolveRoots("", wd)
-		return roots, true, err
+		return site{roots: roots}, true, err
 	}
 
 	if opts.asJSON {
-		return director.Roots{}, false, errors.New("no location chosen, and --json has nobody to ask: pass --dir <path>, --global or --config <root>")
+		return site{}, false, errors.New("no location chosen, and --json has nobody to ask: pass --dir <path>, --global or --config <root>")
 	}
 	if !ask.terminal {
-		return director.Roots{}, false, errors.New("no location chosen and no terminal to ask on: pass --dir <path>, --global or --config <root>")
+		return site{}, false, errors.New("no location chosen and no terminal to ask on: pass --dir <path>, --global or --config <root>")
 	}
 	root, err := askSite(ask, wd)
 	if err != nil || root == "" {
-		return director.Roots{}, false, err
+		return site{}, false, err
 	}
 	roots, err := director.ResolveRoots(root, wd)
-	return roots, true, err
+	return site{roots: roots, project: filepath.Dir(root)}, true, err
 }
 
 // askSite explains what is about to be installed, then asks where.

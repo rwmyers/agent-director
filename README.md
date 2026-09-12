@@ -53,7 +53,12 @@ $EDITOR .director/workflows/*.conf  # make the task types yours
 Every question has a flag — `--host`, `--scope`, `--dir` (or `--global` for the
 user root, or `--config` for a root named outright) and `--harness` — and
 without a terminal, or under `--json`, all of them are required rather than
-guessed at.
+guessed at. Project-scope skills (`--scope project`) go into the same project
+as the workflow — the directory you gave `--dir` or accepted at the prompt — so
+`director setup --scope project --dir ~/proj/foo` puts both `.director/` and
+the harness's skills directory inside `foo`, wherever you run it from. Under
+`--global` or `--config` the location is a root rather than a project, and
+project-scope skills go under the current directory instead.
 
 [Adding a harness](#adding-a-harness) below says how to write or install one.
 It goes before `setup` because setup offers only the harnesses it can find at

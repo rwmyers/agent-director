@@ -43,6 +43,28 @@ func (scratchInstaller) SkillLocations() (harness.SkillLocations, error) {
 	return harness.SkillLocations{Description: "Scratch Harness", GlobalDir: scratchSkillsDir, Verified: true}, nil
 }
 
+// projectSkillsHost is a skills target with a project-local location only, for
+// the tests about where project-scope skills land.
+const projectSkillsHost = "fake-project-skills"
+
+// projectSkillsDir is where projectSkillsHost puts skills, relative to
+// whichever project the installer chooses.
+var projectSkillsDir = filepath.Join(".fake-project", "skills")
+
+type projectInstaller struct{}
+
+func (projectInstaller) SkillLocations() (harness.SkillLocations, error) {
+	return harness.SkillLocations{Description: "Project Harness", ProjectDir: projectSkillsDir, Verified: true}, nil
+}
+
+// projectSkillsFlags answer the skills half with project scope into
+// projectSkillsHost, leaving the location to the caller.
+func projectSkillsFlags(t *testing.T) []string {
+	t.Helper()
+	harness.RegisterSkillInstaller(projectSkillsHost, projectInstaller{})
+	return []string{"--host", projectSkillsHost, "--scope", string(ScopeProject)}
+}
+
 // silenceStdout points os.Stdout at /dev/null for one test. setup prints a page
 // of guidance that would otherwise bury everything else.
 func silenceStdout(t *testing.T) {
@@ -399,6 +421,109 @@ func TestSetupInstallsSkillsAndWorkflowTogether(t *testing.T) {
 	}
 	if got := directorCount(t, root); got != 1 {
 		t.Errorf("directors under %s = %d, want 1", root, got)
+	}
+}
+
+func TestSetupProjectScopeSkillsLandUnderDir(t *testing.T) {
+	// Project-scope skills belong to the project the workflow goes into, not
+	// to wherever setup happens to be run from: --dir names a project, and
+	// both halves land inside it.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	project := t.TempDir()
+	elsewhere := t.TempDir()
+	t.Chdir(elsewhere)
+	setSetupPrompter(t, noTerminal())
+
+	args := append([]string{"setup", "--dir", project, "--harness", "fake-alpha"}, projectSkillsFlags(t)...)
+	if err := runDirector(t, args...); err != nil {
+		t.Fatalf("setup --scope project --dir = %v, want no error", err)
+	}
+	skill := filepath.Join(project, projectSkillsDir, "director", "SKILL.md")
+	if !exists(skill) {
+		t.Errorf("%s is missing, want project-scope skills under --dir", skill)
+	}
+	if stray := filepath.Join(elsewhere, projectSkillsDir); exists(stray) {
+		t.Errorf("%s exists, want nothing installed under the working directory", stray)
+	}
+	if got := directorCount(t, filepath.Join(project, director.ProjectDirName)); got != 1 {
+		t.Errorf("directors under %s = %d, want the workflow half in the same project", project, got)
+	}
+}
+
+func TestSetupProjectScopeSkillsFollowTheTypedPath(t *testing.T) {
+	// The interactive answer is the same answer as --dir, and the skills
+	// follow it the same way.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	parent := t.TempDir()
+	t.Chdir(parent)
+	typed := filepath.Join("elsewhere", "proj")
+	setSetupPrompter(t, answering(typed+"\ny\n"+fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-alpha"))))
+
+	args := append([]string{"setup"}, projectSkillsFlags(t)...)
+	if err := runDirector(t, args...); err != nil {
+		t.Fatalf("setup, typing a path = %v, want no error", err)
+	}
+	skill := filepath.Join(parent, typed, projectSkillsDir, "director", "SKILL.md")
+	if !exists(skill) {
+		t.Errorf("%s is missing, want project-scope skills under the typed path", skill)
+	}
+	if stray := filepath.Join(parent, projectSkillsDir); exists(stray) {
+		t.Errorf("%s exists, want nothing installed under the working directory", stray)
+	}
+}
+
+func TestSetupProjectScopeSkillsStayHereUnderGlobal(t *testing.T) {
+	// --global names a root, not a project, so it says nothing about which
+	// project the skills belong to: they go under the working directory, as
+	// the help text promises.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	here := t.TempDir()
+	t.Chdir(here)
+	setSetupPrompter(t, noTerminal())
+
+	args := append([]string{"setup", "--global", "--harness", "fake-alpha"}, projectSkillsFlags(t)...)
+	if err := runDirector(t, args...); err != nil {
+		t.Fatalf("setup --scope project --global = %v, want no error", err)
+	}
+	skill := filepath.Join(here, projectSkillsDir, "director", "SKILL.md")
+	if !exists(skill) {
+		t.Errorf("%s is missing, want project-scope skills under the working directory when the location is a root", skill)
+	}
+}
+
+func TestSetupDryRunReportsProjectScopeSkillsUnderDir(t *testing.T) {
+	// The dry run names the same path the real run would write to.
+	registerFakeHarnesses()
+	scratchOnly(t)
+	project := t.TempDir()
+	elsewhere := t.TempDir()
+	t.Chdir(elsewhere)
+	setSetupPrompter(t, noTerminal())
+
+	stop := captureStdout(t)
+	args := append([]string{"setup", "--dry-run", "--dir", project, "--harness", "fake-alpha"}, projectSkillsFlags(t)...)
+	err := runDirector(t, args...)
+	out := stop()
+	if err != nil {
+		t.Fatalf("setup --dry-run --scope project --dir = %v, want no error", err)
+	}
+	want := "would write " + filepath.Join(project, projectSkillsDir, "director", "SKILL.md")
+	if !strings.Contains(out, want) {
+		t.Errorf("setup --dry-run printed %q, want it to contain %q", out, want)
+	}
+	if strings.Contains(out, filepath.Join(elsewhere, projectSkillsDir)) {
+		t.Errorf("setup --dry-run printed %q, want no skill path under the working directory", out)
+	}
+	if exists(filepath.Join(project, projectSkillsDir)) {
+		t.Errorf("%s exists, want --dry-run to have installed nothing", filepath.Join(project, projectSkillsDir))
 	}
 }
 
