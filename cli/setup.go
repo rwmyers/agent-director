@@ -1001,7 +1001,7 @@ targets.`,
 				// Display is the adapter's own declaration that it shows
 				// somebody else's conversation. It is reported here because it
 				// is what explains an entry in this table that `director
-				// install` will not accept.
+				// setup` will not accept.
 				Display bool `json:"display"`
 			}
 			var rows []row

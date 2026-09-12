@@ -21,7 +21,7 @@ type promptField interface {
 // prompter drives interactive questions with huh.
 //
 // On a terminal the fields render as a full TUI. When stdin is not a terminal
-// it falls back to huh's accessible line-based mode, so the same command still
+// it falls back to huh's accessible line-based mode, so the same command
 // still works from a script or a pipe. `director setup` declines to ask at all
 // off a terminal and takes flags instead; the fallback is for the commands that
 // confirm a deletion, where a piped answer is a reasonable thing to give.
