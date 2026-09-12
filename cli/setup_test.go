@@ -14,21 +14,36 @@ import (
 )
 
 // The tests in this file do not run in parallel. The harness registry, the
-// prompter `director init` asks with, and os.Stdout are all process-global.
+// prompter `director setup` asks with, and os.Stdout are all process-global.
 
 // registerFakeHarnesses puts two drivable adapters in the registry so the
 // prompt has something to offer. Registration is by name, so repeating it
 // across tests is harmless.
 //
 // They are fakes rather than the real adapters because the point under test is
-// that init offers whatever the registry holds. A test that named claude-code
+// that setup offers whatever the registry holds. A test that named claude-code
 // would pass just as well against the hardcoded default it replaced.
 func registerFakeHarnesses() {
 	harness.Register(fakeAdapter{name: "fake-alpha"})
 	harness.Register(fakeAdapter{name: "fake-omega"})
 }
 
-// silenceStdout points os.Stdout at /dev/null for one test. init prints a page
+// scratchSkillsHost is the skills target every workflow-half test installs
+// into, so that the skills half has a flag answer and writes only into scratch.
+const scratchSkillsHost = "fake-skills"
+
+// scratchSkillsDir is where scratchSkillsHost puts skills. Each run of setup
+// points it at a fresh directory; the installer reads it when enumerated, which
+// is once per command.
+var scratchSkillsDir string
+
+type scratchInstaller struct{}
+
+func (scratchInstaller) SkillLocations() (harness.SkillLocations, error) {
+	return harness.SkillLocations{Description: "Scratch Harness", GlobalDir: scratchSkillsDir, Verified: true}, nil
+}
+
+// silenceStdout points os.Stdout at /dev/null for one test. setup prints a page
 // of guidance that would otherwise bury everything else.
 func silenceStdout(t *testing.T) {
 	t.Helper()
@@ -44,29 +59,47 @@ func silenceStdout(t *testing.T) {
 	})
 }
 
-// setInitPrompter makes init ask with a prompter of the test's choosing.
-func setInitPrompter(t *testing.T, ask prompter) {
+// setSetupPrompter makes setup ask with a prompter of the test's choosing.
+func setSetupPrompter(t *testing.T, ask prompter) {
 	t.Helper()
-	saved := initPrompter
-	initPrompter = func() prompter { return ask }
-	t.Cleanup(func() { initPrompter = saved })
+	saved := setupPrompter
+	setupPrompter = func() prompter { return ask }
+	t.Cleanup(func() { setupPrompter = saved })
 }
 
 // answering builds a prompter that is allowed to ask and answers from a script.
 //
 // accessible rather than terminal-only, because huh's full TUI needs a pty and
 // its line mode does not; terminal stays true because that is the thing under
-// test — whether init is willing to ask at all.
+// test — whether setup is willing to ask at all.
 func answering(script string) prompter {
 	return prompter{in: strings.NewReader(script), out: io.Discard, terminal: true, accessible: true}
+}
+
+// transcribing is answering, keeping what the prompts rendered so a test can
+// assert on what the person was shown.
+func transcribing(script string) (prompter, *strings.Builder) {
+	var shown strings.Builder
+	return prompter{in: strings.NewReader(script), out: &shown, terminal: true, accessible: true}, &shown
 }
 
 // refusingReader fails the test if a prompt ever reads from it.
 type refusingReader struct{ t *testing.T }
 
 func (r refusingReader) Read([]byte) (int, error) {
-	r.t.Error("init asked a question that had already been answered by a flag")
+	r.t.Error("setup asked a question that had already been answered by a flag")
 	return 0, io.EOF
+}
+
+// notAsking is a prompter with a terminal that must never be read from: every
+// answer is expected to come from a flag.
+func notAsking(t *testing.T) prompter {
+	return prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true}
+}
+
+// noTerminal is a prompter with nobody at the other end.
+func noTerminal() prompter {
+	return prompter{in: strings.NewReader(""), out: io.Discard}
 }
 
 // optionIndex is the 1-based position huh's accessible select gives a name.
@@ -95,13 +128,33 @@ func runDirector(t *testing.T, args ...string) error {
 	return cmd.Execute()
 }
 
-// runInit runs `director init` against a scratch root named outright.
-func runInit(t *testing.T, root string, args ...string) error {
+// skillsFlags answer the skills half's questions with the scratch target, and
+// point that target at a fresh directory.
+func skillsFlags(t *testing.T) []string {
 	t.Helper()
-	return runDirector(t, append([]string{"init", "--config", root}, args...)...)
+	harness.RegisterSkillInstaller(scratchSkillsHost, scratchInstaller{})
+	scratchSkillsDir = t.TempDir()
+	return []string{"--host", scratchSkillsHost, "--scope", string(ScopeGlobal)}
 }
 
-// captureStdout collects what init prints. Returns a function that stops the
+// runSetup runs `director setup` against a scratch root named outright, with
+// the skills half answered by flags so that only the workflow half is under
+// test.
+func runSetup(t *testing.T, root string, args ...string) error {
+	t.Helper()
+	all := append([]string{"setup", "--config", root}, skillsFlags(t)...)
+	return runDirector(t, append(all, args...)...)
+}
+
+// runSetupHere runs `director setup` with the skills half answered by flags and
+// the location left to be asked, or found from the environment.
+func runSetupHere(t *testing.T, args ...string) error {
+	t.Helper()
+	all := append([]string{"setup"}, skillsFlags(t)...)
+	return runDirector(t, append(all, args...)...)
+}
+
+// captureStdout collects what setup prints. Returns a function that stops the
 // capture and hands back everything written.
 func captureStdout(t *testing.T) func() string {
 	t.Helper()
@@ -141,12 +194,12 @@ func establishRoot(t *testing.T, root, harnessName string) {
 	t.Helper()
 	registerFakeHarnesses()
 	silenceStdout(t)
-	if err := runInit(t, root, "--harness", harnessName); err != nil {
+	if err := runSetup(t, root, "--harness", harnessName); err != nil {
 		t.Fatalf("establishing %s = %v", root, err)
 	}
 }
 
-// scratchOnly makes sure a test that runs init without --config cannot reach
+// scratchOnly makes sure a test that runs setup without --config cannot reach
 // the root this process was itself spawned under.
 func scratchOnly(t *testing.T) {
 	t.Helper()
@@ -185,7 +238,13 @@ func configuredHarness(t *testing.T, root string) string {
 	return config.Harness
 }
 
-func TestInitAsksWhichHarness(t *testing.T) {
+// exists reports whether a path is there at all.
+func exists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
+}
+
+func TestSetupAsksWhichHarness(t *testing.T) {
 	silenceStdout(t)
 	registerFakeHarnesses()
 
@@ -194,10 +253,10 @@ func TestInitAsksWhichHarness(t *testing.T) {
 	for _, want := range []string{"fake-alpha", "fake-omega"} {
 		t.Run("chooses "+want, func(t *testing.T) {
 			root := t.TempDir()
-			setInitPrompter(t, answering(fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), want))))
+			setSetupPrompter(t, answering(fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), want))))
 
-			if err := runInit(t, root); err != nil {
-				t.Fatalf("init = %v, want no error", err)
+			if err := runSetup(t, root); err != nil {
+				t.Fatalf("setup = %v, want no error", err)
 			}
 			if got := configuredHarness(t, root); got != want {
 				t.Errorf("configured harness = %q, want the one selected: %q", got, want)
@@ -206,29 +265,29 @@ func TestInitAsksWhichHarness(t *testing.T) {
 	}
 }
 
-func TestInitHarnessFlagSkipsTheQuestion(t *testing.T) {
+func TestSetupHarnessFlagSkipsTheQuestion(t *testing.T) {
 	silenceStdout(t)
 	registerFakeHarnesses()
 	root := t.TempDir()
-	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true})
+	setSetupPrompter(t, notAsking(t))
 
-	if err := runInit(t, root, "--harness", "fake-omega"); err != nil {
-		t.Fatalf("init --harness = %v, want no error", err)
+	if err := runSetup(t, root, "--harness", "fake-omega"); err != nil {
+		t.Fatalf("setup --harness = %v, want no error", err)
 	}
 	if got := configuredHarness(t, root); got != "fake-omega" {
 		t.Errorf("configured harness = %q, want the one the flag named", got)
 	}
 }
 
-func TestInitWithoutTerminalOrFlagRefuses(t *testing.T) {
+func TestSetupWithoutTerminalOrFlagRefuses(t *testing.T) {
 	silenceStdout(t)
 	registerFakeHarnesses()
 	root := t.TempDir()
-	setInitPrompter(t, prompter{in: strings.NewReader(""), out: io.Discard})
+	setSetupPrompter(t, noTerminal())
 
-	err := runInit(t, root)
+	err := runSetup(t, root)
 	if err == nil {
-		t.Fatal("init with no terminal and no --harness = nil, want a refusal rather than a silent default")
+		t.Fatal("setup with no terminal and no --harness = nil, want a refusal rather than a silent default")
 	}
 	if code := codeFor(err); code == exitOK {
 		t.Errorf("codeFor(%v) = %d, want a non-zero exit", err, code)
@@ -246,27 +305,234 @@ func TestInitWithoutTerminalOrFlagRefuses(t *testing.T) {
 	if _, statErr := os.Stat(filepath.Join(root, "director.conf")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("os.Stat(director.conf) = %v, want the refusal to have written nothing", statErr)
 	}
+	// And the skills half, which ran first in the old two-command world, must
+	// not have run at all: a refusal that has already installed skills is a
+	// refusal somebody has to undo.
+	if entries, _ := os.ReadDir(scratchSkillsDir); len(entries) != 0 {
+		t.Errorf("skills directory holds %d entries, want the refusal to have installed nothing", len(entries))
+	}
 }
 
-func TestInitRejectsAnUnknownHarness(t *testing.T) {
+func TestSetupNonInteractiveNamesEveryMissingFlag(t *testing.T) {
+	// The contract off a terminal is that every answer is a flag. Being told
+	// about them one run at a time is being told the rules one at a time, so
+	// a refusal names all of them together — including --harness, which is
+	// only needed for a root that does not exist yet.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	t.Chdir(t.TempDir())
+
+	for name, ask := range map[string]prompter{"no terminal": noTerminal(), "--json": notAsking(t)} {
+		t.Run(name, func(t *testing.T) {
+			setSetupPrompter(t, ask)
+			args := []string{"setup"}
+			if name == "--json" {
+				args = append(args, "--json")
+			}
+			err := runDirector(t, args...)
+			if err == nil {
+				t.Fatal("setup with nothing to go on = nil, want a refusal")
+			}
+			for _, want := range []string{"--scope", "--host", "--dir", "--global", "--config", "--harness"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error = %q, want it to name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
+func TestSetupNonInteractiveOnAnEstablishedRootNeedsNoHarness(t *testing.T) {
+	// The harness is only written into a director.conf that does not exist
+	// yet, so a script re-running setup against a root it already made is not
+	// asked for a flag that has nowhere to go.
+	root := t.TempDir()
+	establishRoot(t, root, "fake-alpha")
+	setSetupPrompter(t, noTerminal())
+
+	if err := runSetup(t, root); err != nil {
+		t.Fatalf("second setup off a terminal, no --harness = %v, want it to adopt quietly", err)
+	}
+	if got := directorCount(t, root); got != 1 {
+		t.Errorf("directors = %d, want the one already there", got)
+	}
+}
+
+func TestSetupRejectsAnUnknownHarness(t *testing.T) {
 	silenceStdout(t)
 	registerFakeHarnesses()
 	root := t.TempDir()
-	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true})
+	setSetupPrompter(t, notAsking(t))
 
-	err := runInit(t, root, "--harness", "no-such-harness")
+	err := runSetup(t, root, "--harness", "no-such-harness")
 	if err == nil {
-		t.Fatal("init --harness no-such-harness = nil, want a refusal")
+		t.Fatal("setup --harness no-such-harness = nil, want a refusal")
 	}
 	if !strings.Contains(err.Error(), "fake-alpha") {
 		t.Errorf("error = %q, want it to list the harnesses that are valid", err)
 	}
 }
 
-func TestInitRefusesARootFoundAboveIt(t *testing.T) {
-	// The reported accident: init run in a worktree under a project that
-	// already had a root registered a director in the project's fleet instead,
-	// silently, and left that fleet with two directors of the same name.
+func TestSetupInstallsSkillsAndWorkflowTogether(t *testing.T) {
+	// The whole point of the merge: one command, and afterwards both halves
+	// are there. --dir is the scripted answer to the location question, and
+	// the root lands under it as .director.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	project := t.TempDir()
+	setSetupPrompter(t, noTerminal())
+
+	if err := runSetupHere(t, "--dir", project, "--harness", "fake-alpha"); err != nil {
+		t.Fatalf("setup --dir = %v, want no error", err)
+	}
+	root := filepath.Join(project, director.ProjectDirName)
+	for _, want := range []string{
+		filepath.Join(root, "director.conf"),
+		filepath.Join(root, "workflows", "default.conf"),
+		filepath.Join(scratchSkillsDir, "director", "SKILL.md"),
+	} {
+		if !exists(want) {
+			t.Errorf("%s is missing, want setup to have written it", want)
+		}
+	}
+	if got := directorCount(t, root); got != 1 {
+		t.Errorf("directors under %s = %d, want 1", root, got)
+	}
+}
+
+func TestSetupDirAcceptsARelativePath(t *testing.T) {
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	parent := t.TempDir()
+	t.Chdir(parent)
+	setSetupPrompter(t, noTerminal())
+
+	if err := runSetupHere(t, "--dir", filepath.Join("sub", "project"), "--harness", "fake-alpha"); err != nil {
+		t.Fatalf("setup --dir sub/project = %v, want no error", err)
+	}
+	root := filepath.Join(parent, "sub", "project", director.ProjectDirName)
+	if got := directorCount(t, root); got != 1 {
+		t.Errorf("directors under %s = %d, want the relative path resolved from the working directory", root, got)
+	}
+}
+
+func TestSetupGlobalUsesTheUserRoot(t *testing.T) {
+	// --global answers the location question with the user root. It says
+	// nothing about where the skills go; that is --scope's question.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	home := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", home)
+	t.Chdir(t.TempDir())
+	setSetupPrompter(t, noTerminal())
+
+	if err := runSetupHere(t, "--global", "--harness", "fake-alpha"); err != nil {
+		t.Fatalf("setup --global = %v, want no error", err)
+	}
+	root := filepath.Join(home, "director")
+	if got := directorCount(t, root); got != 1 {
+		t.Errorf("directors under the user root %s = %d, want 1", root, got)
+	}
+}
+
+func TestSetupRefusesTwoAnswersToTheLocation(t *testing.T) {
+	silenceStdout(t)
+	registerFakeHarnesses()
+	setSetupPrompter(t, notAsking(t))
+
+	err := runSetupHere(t, "--global", "--dir", t.TempDir(), "--harness", "fake-alpha")
+	if err == nil {
+		t.Fatal("setup --global --dir = nil, want a refusal to pick between them")
+	}
+	for _, want := range []string{"--global", "--dir"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error = %q, want it to name %q", err, want)
+		}
+	}
+}
+
+func TestSetupExplainsAndSuggestsTheWorkingDirectory(t *testing.T) {
+	// The interactive path: before the location is asked, the person is told
+	// what a workflow is; the question itself offers where they are standing,
+	// and Enter takes it.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	project := t.TempDir()
+	t.Chdir(project)
+	ask, shown := transcribing("\n" + fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-omega")))
+	setSetupPrompter(t, ask)
+
+	if err := runSetupHere(t); err != nil {
+		t.Fatalf("setup = %v, want no error", err)
+	}
+	for _, want := range []string{"task types", "permissions", "progress", "bound to one workflow permanently", project} {
+		if !strings.Contains(shown.String(), want) {
+			t.Errorf("setup showed %q, want it to include %q", shown.String(), want)
+		}
+	}
+	root := filepath.Join(project, director.ProjectDirName)
+	if got := configuredHarness(t, root); got != "fake-omega" {
+		t.Errorf("configured harness = %q, want the one selected after the location", got)
+	}
+	if got := directorCount(t, root); got != 1 {
+		t.Errorf("directors under %s = %d, want Enter to have accepted the working directory", root, got)
+	}
+}
+
+func TestSetupTypedPathIsConfirmedBeforeItIsCreated(t *testing.T) {
+	// A path typed in is a path that can be mistyped. The directory is said
+	// back before it is created; declining backs out with nothing written.
+	silenceStdout(t)
+	registerFakeHarnesses()
+	scratchOnly(t)
+	parent := t.TempDir()
+	t.Chdir(parent)
+	typed := filepath.Join("elsewhere", "proj")
+	root := filepath.Join(parent, typed, director.ProjectDirName)
+
+	t.Run("declined", func(t *testing.T) {
+		ask, shown := transcribing(typed + "\nn\n")
+		setSetupPrompter(t, ask)
+		stop := captureStdout(t)
+		err := runSetupHere(t)
+		out := stop()
+		if err != nil {
+			t.Fatalf("setup, declining the path = %v, want backing out to be a normal outcome", err)
+		}
+		if !strings.Contains(shown.String(), filepath.Join(parent, typed)) {
+			t.Errorf("setup showed %q, want it to say back the absolute path it would create", shown.String())
+		}
+		if exists(filepath.Join(parent, typed)) {
+			t.Errorf("%s exists, want nothing created after the path was declined", filepath.Join(parent, typed))
+		}
+		if !strings.Contains(out, "nothing was set up") {
+			t.Errorf("setup printed %q, want it to say nothing was set up", out)
+		}
+	})
+
+	t.Run("confirmed", func(t *testing.T) {
+		setSetupPrompter(t, answering(typed+"\ny\n"+fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-alpha"))))
+		if err := runSetupHere(t); err != nil {
+			t.Fatalf("setup, confirming the path = %v, want no error", err)
+		}
+		if got := directorCount(t, root); got != 1 {
+			t.Errorf("directors under %s = %d, want the confirmed relative path resolved from the working directory", root, got)
+		}
+	})
+}
+
+func TestSetupPointsOutARootAboveBeforeCreatingBeneathIt(t *testing.T) {
+	// The accident the old command refused outright: setup run in a worktree
+	// under a project that already had a root registered a director in the
+	// project's fleet instead, silently, and left that fleet with two directors
+	// of the same name. Now the location is a question, and a root above the
+	// answer is pointed out before a separate one is created — so the default
+	// answer cannot land anywhere by accident.
 	scratchOnly(t)
 	project := t.TempDir()
 	parentRoot := filepath.Join(project, director.ProjectDirName)
@@ -278,38 +544,46 @@ func TestInitRefusesARootFoundAboveIt(t *testing.T) {
 		t.Fatalf("MkdirAll(%s) = %v", child, err)
 	}
 	t.Chdir(child)
-	setInitPrompter(t, prompter{in: refusingReader{t: t}, out: io.Discard, terminal: true, accessible: true})
 
-	err := runDirector(t, "init")
-	if err == nil {
-		t.Fatal("init = nil, want a refusal rather than adopting the root above")
-	}
-	for _, want := range []string{parentRoot, child, "--config"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error = %q, want it to name %q", err, want)
+	t.Run("declined", func(t *testing.T) {
+		ask, shown := transcribing("\nn\n")
+		setSetupPrompter(t, ask)
+		if err := runSetupHere(t); err != nil {
+			t.Fatalf("setup, declining = %v, want backing out to be a normal outcome", err)
 		}
-	}
-	if got := directorCount(t, parentRoot); got != before {
-		t.Errorf("directors under the root above = %d, want it untouched at %d", got, before)
-	}
-	if _, statErr := os.Stat(filepath.Join(child, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Errorf("os.Stat(child .director) = %v, want the refusal to have created nothing", statErr)
-	}
+		if !strings.Contains(shown.String(), parentRoot) {
+			t.Errorf("setup showed %q, want it to name the root above at %s", shown.String(), parentRoot)
+		}
+		if got := directorCount(t, parentRoot); got != before {
+			t.Errorf("directors under the root above = %d, want it untouched at %d", got, before)
+		}
+		if exists(filepath.Join(child, director.ProjectDirName)) {
+			t.Error("a root was created in the worktree after the person declined")
+		}
+	})
+
+	t.Run("confirmed", func(t *testing.T) {
+		setSetupPrompter(t, answering("\ny\n"+fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-alpha"))))
+		if err := runSetupHere(t); err != nil {
+			t.Fatalf("setup, confirming = %v, want no error", err)
+		}
+		if got := directorCount(t, filepath.Join(child, director.ProjectDirName)); got != 1 {
+			t.Errorf("directors in the worktree's own root = %d, want 1", got)
+		}
+		if got := directorCount(t, parentRoot); got != before {
+			t.Errorf("directors under the root above = %d, want it untouched at %d", got, before)
+		}
+	})
 }
 
-func TestInitHonoursDirectorRoot(t *testing.T) {
-	// The inverse of what this test used to assert. DIRECTOR_ROOT names a root
-	// outright — in a setup script, and in the environment director injects into
-	// the agents it spawns — so init uses it, the same as every other command.
-	// Only the silent walk up out of the working directory is refused; see
-	// TestInitRefusesARootFoundAboveIt for the accident that is about.
+func TestSetupHonoursDirectorRoot(t *testing.T) {
+	// DIRECTOR_ROOT names a root outright — in a setup script, and in the
+	// environment director injects into the agents it spawns — so setup uses
+	// it the same as every other command, and does not ask where.
 	//
-	// The observable is which root init resolved to, asserted from what it
-	// reports. It used to be the director count, back when a second init in a
-	// root always added one; init now adopts the director already there, so the
-	// count no longer moves and would say nothing either way. Naming the root
-	// and the director it used is the thing this test was always about, and is
-	// a narrower claim than a count that any third root could also satisfy.
+	// The observable is which root setup resolved to, asserted from what it
+	// reports: setup adopts the director already there, so a count would say
+	// nothing either way.
 	project := t.TempDir()
 	root := filepath.Join(project, director.ProjectDirName)
 	establishRoot(t, root, "fake-alpha")
@@ -318,33 +592,30 @@ func TestInitHonoursDirectorRoot(t *testing.T) {
 	elsewhere := t.TempDir()
 	t.Setenv(director.EnvRoot, root)
 	t.Chdir(elsewhere)
-	setInitPrompter(t, answering("1\n"))
+	setSetupPrompter(t, answering("1\n"))
 
 	stop := captureStdout(t)
-	err := runDirector(t, "init")
+	err := runSetupHere(t)
 	out := stop()
 	if err != nil {
-		t.Fatalf("init with $DIRECTOR_ROOT set = %v, want it honoured", err)
+		t.Fatalf("setup with $DIRECTOR_ROOT set = %v, want it honoured", err)
 	}
 	for _, want := range []string{root, resident} {
 		if !strings.Contains(out, want) {
-			t.Errorf("init said %q, want it to name %q — the root $%s points at",
+			t.Errorf("setup said %q, want it to name %q — the root $%s points at",
 				out, want, director.EnvRoot)
 		}
 	}
 	if _, statErr := os.Stat(filepath.Join(elsewhere, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
-		t.Errorf("os.Stat(cwd .director) = %v, want init to have used the named root instead", statErr)
+		t.Errorf("os.Stat(cwd .director) = %v, want setup to have used the named root instead", statErr)
 	}
 }
 
-func TestInitUsesTheRootInTheWorkingDirectory(t *testing.T) {
-	// Standing in the project and running init against it is what init is for,
-	// and the refusal above must not have cost it.
-	//
-	// As above, the observable is which root was used rather than how many
-	// directors are in it: init adopts the one already registered, so the count
-	// stays where it was. What must not happen is init landing somewhere else,
-	// or nesting a second root inside the project.
+func TestSetupUsesTheRootInTheWorkingDirectory(t *testing.T) {
+	// Standing in the project, accepting the suggested location, and finding
+	// the root already there is the ordinary re-run. Setup adopts the director
+	// registered in it; what must not happen is a second root nested inside
+	// the first.
 	scratchOnly(t)
 	project := t.TempDir()
 	root := filepath.Join(project, director.ProjectDirName)
@@ -352,17 +623,17 @@ func TestInitUsesTheRootInTheWorkingDirectory(t *testing.T) {
 	resident := onlyDirector(t, root)
 
 	t.Chdir(project)
-	setInitPrompter(t, answering("1\n"))
+	setSetupPrompter(t, answering("\n1\n"))
 
 	stop := captureStdout(t)
-	err := runDirector(t, "init")
+	err := runSetupHere(t)
 	out := stop()
 	if err != nil {
-		t.Fatalf("init in the project = %v, want no error", err)
+		t.Fatalf("setup in the project = %v, want no error", err)
 	}
 	for _, want := range []string{root, resident} {
 		if !strings.Contains(out, want) {
-			t.Errorf("init said %q, want it to name %q — the root in the working directory", out, want)
+			t.Errorf("setup said %q, want it to name %q — the root in the working directory", out, want)
 		}
 	}
 	if _, statErr := os.Stat(filepath.Join(root, director.ProjectDirName)); !errors.Is(statErr, os.ErrNotExist) {
@@ -370,19 +641,19 @@ func TestInitUsesTheRootInTheWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestInitAsksOnAnEstablishedRootAndLeavesItAlone(t *testing.T) {
+func TestSetupAsksOnAnEstablishedRootAndLeavesItAlone(t *testing.T) {
 	// Silence was the complaint. On a root whose director.conf somebody wrote by
-	// hand, init asks and then says what it did not do — rather than skipping
+	// hand, setup asks and then says what it did not do — rather than skipping
 	// the question because there was nowhere convenient to put the answer.
 	root := t.TempDir()
 	establishRoot(t, root, "fake-alpha")
 
 	stop := captureStdout(t)
-	setInitPrompter(t, answering(fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-omega"))))
-	err := runInit(t, root)
+	setSetupPrompter(t, answering(fmt.Sprintf("%d\n", optionIndex(t, harness.Names(), "fake-omega"))))
+	err := runSetup(t, root)
 	out := stop()
 	if err != nil {
-		t.Fatalf("init on an established root = %v, want no error", err)
+		t.Fatalf("setup on an established root = %v, want no error", err)
 	}
 
 	if got := configuredHarness(t, root); got != "fake-alpha" {
@@ -390,7 +661,39 @@ func TestInitAsksOnAnEstablishedRootAndLeavesItAlone(t *testing.T) {
 	}
 	for _, want := range []string{"fake-omega", "harness = fake-omega", filepath.Join(root, "director.conf")} {
 		if !strings.Contains(out, want) {
-			t.Errorf("init said %q, want it to mention %q", out, want)
+			t.Errorf("setup said %q, want it to mention %q", out, want)
 		}
+	}
+}
+
+func TestSetupDryRunWritesNothing(t *testing.T) {
+	// --dry-run covers both halves: it says where the skills and the starters
+	// would go and what would happen to the director, and touches none of it.
+	registerFakeHarnesses()
+	scratchOnly(t)
+	project := t.TempDir()
+	setSetupPrompter(t, noTerminal())
+
+	stop := captureStdout(t)
+	err := runSetupHere(t, "--dry-run", "--dir", project, "--harness", "fake-alpha")
+	out := stop()
+	if err != nil {
+		t.Fatalf("setup --dry-run = %v, want no error", err)
+	}
+	root := filepath.Join(project, director.ProjectDirName)
+	for _, want := range []string{
+		"would write " + filepath.Join(root, "director.conf"),
+		"would write " + filepath.Join(scratchSkillsDir, "director", "SKILL.md"),
+		"would register a director",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("setup --dry-run printed %q, want it to contain %q", out, want)
+		}
+	}
+	if exists(root) {
+		t.Errorf("%s exists, want --dry-run to have created nothing", root)
+	}
+	if entries, _ := os.ReadDir(scratchSkillsDir); len(entries) != 0 {
+		t.Errorf("skills directory holds %d entries, want --dry-run to have installed nothing", len(entries))
 	}
 }

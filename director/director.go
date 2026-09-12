@@ -125,13 +125,13 @@ func Init(roots Roots, workflowName, name string, clock Clock) (*State, error) {
 }
 
 // DefaultWorkflow is the workflow a director binds to when nobody says which.
-// It is the name of the starter `director init` writes.
+// It is the name of the starter `director setup` writes.
 const DefaultWorkflow = "default"
 
 // Register is what setting up a root does about directors: adopt the one
 // already registered there, or create one.
 //
-// Repeating init has to be safe. It is the first command anybody runs, the one
+// Repeating setup has to be safe. It is the first command anybody runs, the one
 // a setup script runs unconditionally, and the one an agent reaches for when
 // something else complained there was no director — so it gets run twice far
 // more often than it gets run once. Creating another director every time is
@@ -147,7 +147,7 @@ const DefaultWorkflow = "default"
 // means start another and the absence of it means use what is here.
 //
 // Adoption is refused rather than guessed when a flag disagrees with the
-// director that is already here, because the alternative is init reporting
+// director that is already here, because the alternative is setup reporting
 // success while quietly ignoring what it was told.
 func Register(roots Roots, workflowName, name string, createNew bool, clock Clock) (*State, bool, error) {
 	// An unreadable record is somebody else's problem to repair, and it is not
@@ -172,7 +172,7 @@ func Register(roots Roots, workflowName, name string, createNew bool, clock Cloc
 
 %s
 
-init will not pick between them, and adding a third would not help. Act as one
+setup will not pick between them, and adding a third would not help. Act as one
 of them by exporting its id:
 
     export %s=%s
@@ -180,7 +180,7 @@ of them by exporting its id:
 or retire the ones you do not want (`+"`director retire <id>`"+`), or say outright
 that you want another:
 
-    director init --new --name <label>`,
+    director setup --new --name <label>`,
 			len(existing), roots.Primary, strings.Join(labels, "\n"), EnvID, existing[0].DirectorID)
 	}
 
@@ -188,10 +188,10 @@ that you want another:
 	if name != "" && name != adopted.Name {
 		return nil, false, fmt.Errorf(`director %s (%s) is already registered under %s, and you asked for one named %q.
 
-init adopts the director that is here rather than renaming it. Ask outright for
+setup adopts the director that is here rather than renaming it. Ask outright for
 a second one if that is what you meant:
 
-    director init --new --name %s`,
+    director setup --new --name %s`,
 			adopted.DirectorID, adopted.Name, roots.Primary, name, name)
 	}
 	if workflowName != "" && workflowName != adopted.Workflow {
@@ -201,7 +201,7 @@ A director's workflow is permanent: its engagements are validated against that
 workflow's task types, so rebinding one would leave a live fleet that nothing
 could describe. A director on %q is a different director:
 
-    director init --new --name <label> --workflow %s`,
+    director setup --new --name <label> --workflow %s`,
 			adopted.DirectorID, adopted.Name, roots.Primary, adopted.Workflow, workflowName, workflowName, workflowName)
 	}
 	return adopted, false, nil
@@ -211,7 +211,7 @@ could describe. A director on %q is a different director:
 //
 // The name is the only part of a director anybody reads: ids are random hex,
 // and `director directors` is otherwise a list of them. Two rows both called
-// "default" — which is exactly what a root looked like after init had been run
+// "default" — which is exactly what a root looked like after setup had been run
 // twice — is a list nobody can act on, and the ambiguity error that follows
 // names them both without helping. So a label already in use here is suffixed
 // rather than handed out again.
@@ -284,7 +284,7 @@ func Open(roots Roots, id string, clock Clock) (*Director, error) {
 		}
 		switch len(states) {
 		case 0:
-			return nil, fmt.Errorf("%w: no directors under %s — run `director init` first", ErrNotFound, roots.Primary)
+			return nil, fmt.Errorf("%w: no directors under %s — run `director setup` first", ErrNotFound, roots.Primary)
 		case 1:
 			state = states[0]
 		default:
@@ -1136,7 +1136,7 @@ func (d *Director) mutate(fn func(state *State) error) error {
 func alternatives(roots Roots, wanted string) string {
 	states, _ := ListDirectors(roots.Primary)
 	if len(states) == 0 {
-		return fmt.Sprintf("There are no directors here at all. If this project has not been set up, run `director init`;\n" +
+		return fmt.Sprintf("There are no directors here at all. If this project has not been set up, run `director setup`;\n" +
 			"otherwise check you are in the right directory — `director where` shows which root is in effect.")
 	}
 

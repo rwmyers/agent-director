@@ -92,7 +92,7 @@ a script. Anything that can run a command can drive it.`,
 		"emit machine-readable JSON")
 
 	root.AddCommand(
-		newInitCmd(),
+		newSetupCmd(),
 		newWhereCmd(),
 		newWorkflowsCmd(),
 		newTasksCmd(),
@@ -103,7 +103,6 @@ a script. Anything that can run a command can drive it.`,
 
 		newAttachCmd(),
 		newSkillsCmd(),
-		newInstallCmd(),
 
 		newSpawnCmd(),
 		newStatusCmd(),

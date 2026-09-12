@@ -65,7 +65,7 @@ of them is yours.
 ### If the project is not set up at all
 
 If `director attach` reports there are no workflows, this project has not been
-set up yet. That is a person's job, not yours — `director init` writes
+set up yet. That is a person's job, not yours — `director setup` writes
 configuration and task definitions into their repository. Tell them, and stop.
 
 ### Remember which director you are

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -17,7 +18,7 @@ import (
 
 // starters are the shipped example workflows and prompts.
 //
-// They are copied into a root by `director init` rather than referenced from
+// They are copied into a root by `director setup` rather than referenced from
 // the binary, so that a user's first edit is to a real file they own. A
 // workflow that lived inside the executable would be one the user could read
 // and not change, which is the opposite of the point.
@@ -25,57 +26,132 @@ import (
 //go:embed all:starters
 var starters embed.FS
 
-func newInitCmd() *cobra.Command {
-	var workflow, name, harnessName string
+// setupPrompter is the prompter `director setup` asks with. Only a test
+// replaces it, so that the asking path can be driven from scripted input.
+var setupPrompter = newPrompter
+
+// workflowExplanation is what setup says before it asks where the workflow
+// should live. It is the one piece of the command a first-time user has no
+// other way of knowing: the questions that follow only make sense once it is
+// clear that a workflow is configuration they will own, and that the director
+// about to be registered is tied to it for good.
+const workflowExplanation = `
+A workflow is this project's delegation policy: it defines the task types a
+director can spawn, the permissions each one runs with, and the progress
+vocabulary each one reports in. A director is bound to one workflow permanently.
+setup installs a .director/ directory holding starter workflows you then edit,
+and registers a director bound to the starter.
+`
+
+func newSetupCmd() *cobra.Command {
+	var scope string
+	var hostNames []string
+	var dryRun bool
+	var workflow, name, harnessName, dir string
 	var force, global, createNew bool
 
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Register a director in this configuration root",
-		Long: `Creates a configuration root if there is not one already, copies the
-starter workflows into it, and registers a director bound to one of them.
+		Use:   "setup",
+		Short: "Install the director skills and set up a workflow root",
+		Long: `Sets up directing in one pass: installs the director skills where a
+harness will find them, then installs a workflow root and registers a director
+in it.
 
-Asks which harness this project spawns into and writes it into director.conf.
-Pass --harness to answer up front, which is what a setup script wants; without
-a terminal to ask on, or under --json, that flag is required rather than
-guessed at.
+Skills first. Asks which harness(es) to install for and whether to install for
+this project or for every project on this machine, then copies the shipped
+skills so an agent can pick them up as /director. The harnesses offered are the
+ones with somewhere to put a skill, which is not the set director can drive —
+` + "`director harnesses`" + ` lists that. A harness that displays another harness's
+conversation reads no skills of its own, so install for the agent you run
+inside it instead. Nothing about the skills is written into .director/: they
+are the director's operating instructions and ship with the binary, so to
+change them, fork the file and point your harness at your copy.
 
-Running it again in the same root is safe: it adopts the director already
-registered there and creates nothing, so a setup script can run unconditionally.
-Pass --new to add a second director to a root that already has one — that is a
-real thing to want, and it is a decision rather than something you should reach
-by running the same command twice.
+Then the workflow. A workflow defines the task types a director can spawn,
+their permissions and their progress vocabularies, and a director is bound to
+one permanently. setup asks where the workflow should live — the current
+directory unless you type another path — creates a .director/ root there if
+there is not one, copies the starter workflows into it, asks which harness this
+project spawns into, and registers a director bound to the starter workflow.
+--dir answers the location question with a directory, --global answers it with
+the user root (~/.config/director) for a machine-wide setup, and --config names
+a root outright. --global says nothing about --scope: where the skills go and
+where the workflow goes are separate questions.
 
-The workflow binding is permanent. A director's engagements are validated
-against its workflow's task types and progress vocabularies, so switching it
-later would leave a live fleet that nothing could describe.`,
+Running it again is safe: an established root is left exactly as it is and the
+director already registered there is adopted, so a setup script can run
+unconditionally. Pass --new to add a second director to a root that already has
+one — that is a real thing to want, and it is a decision rather than something
+you should reach by running the same command twice. The workflow binding is
+permanent: a director's engagements are validated against its workflow's task
+types and progress vocabularies, so switching it later would leave a live fleet
+that nothing could describe.
+
+Without a terminal to ask on, or under --json, nothing is guessed: --scope,
+--host, a location (--dir, --global or --config) and — for a root that does not
+have a director.conf yet — --harness are all required, and setup refuses before
+writing anything if one is missing.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			roots, err := initRoots(global)
+			ask := setupPrompter()
+			flags := siteFlags{dir: dir, global: global}
+
+			// Every question is settled before anything is written. Half a
+			// setup — skills placed, then a refusal over a flag the script did
+			// not pass — leaves somebody to work out what they now have, and
+			// the refusal is cheapest when it is the only thing that happened.
+			if err := requireAnswersUpFront(ask, scope, hostNames, harnessName, force, flags); err != nil {
+				return err
+			}
+			chosenScope, err := resolveScope(scope, ask)
 			if err != nil {
 				return err
+			}
+			chosenHosts, err := resolveHosts(hostNames, ask)
+			if err != nil {
+				return err
+			}
+			cwd, err := os.Getwd()
+			if err != nil {
+				return err
+			}
+			roots, ok, err := resolveSite(flags, ask)
+			if err != nil {
+				return err
+			}
+			if !ok {
+				fmt.Println("No location chosen, so nothing was set up.")
+				return nil
 			}
 			pending, err := pendingStarters(roots.Primary, force)
 			if err != nil {
 				return err
 			}
-
-			// The harness is settled before anything is written, because it is
-			// the one starter value that is a decision rather than a copy, and
-			// half a root written before the question is refused would leave
-			// somebody to work out what they now have.
-			//
-			// Either way the question gets asked. Which of the two branches
+			// The harness is the one starter value that is a decision rather
+			// than a copy. Either way the question gets asked; which branch
 			// runs decides whether the answer is written or reported, never
 			// whether it is put.
-			effectiveHarness := ""
+			var effectiveHarness string
 			if writesStarterConfig(pending) {
-				effectiveHarness, err = resolveHarness(harnessName, initPrompter())
+				effectiveHarness, err = resolveHarness(harnessName, ask)
 			} else {
-				effectiveHarness, err = reviewHarness(roots.Primary, harnessName, initPrompter())
+				effectiveHarness, err = reviewHarness(roots.Primary, harnessName, ask)
 			}
 			if err != nil {
 				return err
+			}
+
+			// Writes, in the order the help text promises them.
+			installed, err := installSkills(chosenHosts, chosenScope, cwd, dryRun)
+			if err != nil {
+				return err
+			}
+			if !opts.asJSON {
+				reportSkills(installed, cwd, dryRun)
+			}
+
+			if dryRun {
+				return reportDryRun(roots, pending, installed, effectiveHarness, workflow, createNew)
 			}
 
 			starterFiles, err := writeStarters(pending, effectiveHarness)
@@ -115,6 +191,7 @@ later would leave a live fleet that nothing could describe.`,
 					starterFiles = []string{}
 				}
 				if err := emit(map[string]any{
+					"skills":    installed,
 					"director":  state.DirectorID,
 					"name":      state.Name,
 					"workflow":  state.Workflow,
@@ -134,12 +211,12 @@ later would leave a live fleet that nothing could describe.`,
 			if created {
 				fmt.Printf("\ndirector %s (%s) initialised for workflow %q\n", state.DirectorID, state.Name, state.Workflow)
 			} else {
-				fmt.Printf("\ndirector %s (%s) is already registered here for workflow %q, so init used it\n",
+				fmt.Printf("\ndirector %s (%s) is already registered here for workflow %q, so setup used it\n",
 					state.DirectorID, state.Name, state.Workflow)
 				fmt.Printf("Nothing was created. Pass --new to add a second director to this root.\n")
 			}
 			fmt.Printf("root: %s\n\n", roots.Primary)
-			if !global && opts.config == "" {
+			if roots.Layers[0].Kind == director.LayerProject {
 				fmt.Printf("This root is local to this project. Directors and engagements under it\n")
 				fmt.Printf("are invisible to other projects. Use --global for a machine-wide setup.\n\n")
 			}
@@ -163,9 +240,7 @@ later would leave a live fleet that nothing could describe.`,
 			fmt.Printf("       %s\n\n", filepath.Join(roots.Primary, "prompts"))
 			fmt.Printf("     Each task's prompt is what an agent is actually told. `director tasks`\n")
 			fmt.Printf("     lists what you have; `director tasks <name>` shows one in full.\n\n")
-			fmt.Printf("  2. Install the director skills so your harness can pick them up:\n\n")
-			fmt.Printf("       director setup\n\n")
-			fmt.Printf("  3. Then, in an agent conversation, start directing:\n\n")
+			fmt.Printf("  2. Then, in an agent conversation, start directing:\n\n")
 			fmt.Printf("       director attach\n\n")
 			fmt.Printf("     That decides whether to take over a running director or start one,\n")
 			fmt.Printf("     and prints the id to use. You do not need to pick one yourself.\n\n")
@@ -174,107 +249,335 @@ later would leave a live fleet that nothing could describe.`,
 			return nil
 		},
 	}
-	cmd.Flags().StringVar(&workflow, "workflow", "", "workflow to bind this director to (default: default)")
-	cmd.Flags().StringVar(&harnessName, "harness", "", "harness to spawn on, skipping the question (default: ask)")
-	cmd.Flags().StringVar(&name, "name", "", "human label for this director")
-	cmd.Flags().BoolVar(&createNew, "new", false, "register another director here rather than using the one already registered")
+	cmd.Flags().StringVar(&scope, "scope", "", "where the skills go: project | global (default: ask)")
+	cmd.Flags().StringSliceVar(&hostNames, "host", nil, "harness to install skills for, repeatable (default: ask)")
+	cmd.Flags().StringVar(&dir, "dir", "", "directory to install the workflow into, as <dir>/.director (default: ask, suggesting the current directory)")
+	cmd.Flags().BoolVar(&global, "global", false, "install the workflow into the user root rather than a project directory")
+	cmd.Flags().StringVar(&harnessName, "harness", "", "harness the workflow spawns on, skipping the question (default: ask)")
+	cmd.Flags().StringVar(&workflow, "workflow", "", "workflow to bind the director to (default: default)")
+	cmd.Flags().StringVar(&name, "name", "", "human label for the director")
+	cmd.Flags().BoolVar(&createNew, "new", false, "register another director rather than using the one already registered")
 	cmd.Flags().BoolVar(&force, "force", false, "overwrite starter files that already exist")
-	cmd.Flags().BoolVar(&global, "global", false, "set up in the user root rather than this project")
+	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be written and change nothing")
 	return cmd
 }
 
-// initRoots decides where `director init` sets things up.
+// interactive reports whether setup may put a question at all.
 //
-// Unlike every other command, init creates rather than resolves, and one part
-// of resolution does not survive that change: the walk up. A command run in a
-// subdirectory should find its project, and for reading that is right. For
-// creating it is a trap — a plain `director init` in a subdirectory or in a
-// sibling worktree used to register a director in whichever fleet happened to
-// be above it. Nothing said so, and the root it landed in was then left with
-// two directors of the same name, which makes every later command refuse to
-// run until somebody passes --director.
+// Two situations rule it out. Without a terminal there is nobody at the other
+// end of a prompt. Under --json there may be, but the caller is a program
+// parsing stdout, and a prompt rendered onto it — or a default chosen on its
+// behalf — is exactly the guess a machine cannot see it was given.
+func interactive(ask prompter) bool {
+	return ask.terminal && !opts.asJSON
+}
+
+// requireAnswersUpFront is the non-interactive contract: every answer comes
+// from a flag, and a missing one is refused in a single message naming all of
+// them, before a question is put or a file is written.
 //
-// So a root found only by walking up is reported and not adopted. Everything
-// that names a root outright is honoured, in the same order ResolveRoots uses:
-// --config or --global, then DIRECTOR_ROOT, then a .director in the working
-// directory itself — that last being the ordinary "add another director to the
-// project I am standing in". The line is not how near the root is, it is
-// whether somebody said where it was.
-func initRoots(global bool) (director.Roots, error) {
-	if opts.config != "" || global {
-		return resolveRoots()
+// Refusing piecemeal — one flag per run — was the alternative, and it is what
+// the individual resolvers still do as a backstop. But a script author fixing
+// flags one run at a time is being told the rules one at a time, and the
+// harness flag in particular depends on the location, so the only place all
+// of them can be named together is here.
+func requireAnswersUpFront(ask prompter, scope string, hosts []string, harnessName string, force bool, flags siteFlags) error {
+	if interactive(ask) {
+		return nil
 	}
-	wd, err := os.Getwd()
-	if err != nil {
-		return director.Roots{}, err
+	var missing []string
+	if scope == "" {
+		missing = append(missing, "--scope project|global")
+	}
+	if len(hosts) == 0 {
+		missing = append(missing, "--host <harness>            (repeatable; `director skills --path` lists targets)")
+	}
+	switch named, err := flags.named(); {
+	case err != nil:
+		return err
+	case !named:
+		missing = append(missing, "--dir <path>, --global or --config <root>")
+		if harnessName == "" {
+			missing = append(missing, fmt.Sprintf("--harness <name>            (for a new root; valid: %s)",
+				strings.Join(harness.Names(), ", ")))
+		}
+	case harnessName == "":
+		// The location is known, so whether the harness is needed is too: it
+		// is only written into a director.conf that does not exist yet.
+		roots, _, err := resolveSite(flags, ask)
+		if err != nil {
+			return err
+		}
+		pending, err := pendingStarters(roots.Primary, force)
+		if err != nil {
+			return err
+		}
+		if writesStarterConfig(pending) {
+			missing = append(missing, fmt.Sprintf("--harness <name>            (valid: %s)",
+				strings.Join(harness.Names(), ", ")))
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	why := "no terminal to ask on"
+	if opts.asJSON {
+		why = "--json has nobody to ask"
+	}
+	return fmt.Errorf("%s, so every answer has to come from a flag. Missing:\n\n  %s",
+		why, strings.Join(missing, "\n  "))
+}
+
+// siteFlags are the ways of answering the location question without being
+// asked it. --config is the third, and is read from the global options.
+type siteFlags struct {
+	dir    string
+	global bool
+}
+
+// named reports whether some flag has answered the location question, and
+// refuses two answers to it.
+func (f siteFlags) named() (bool, error) {
+	var given []string
+	if opts.config != "" {
+		given = append(given, "--config")
+	}
+	if f.global {
+		given = append(given, "--global")
+	}
+	if f.dir != "" {
+		given = append(given, "--dir")
+	}
+	if len(given) > 1 {
+		return true, fmt.Errorf("%s each name where the workflow goes; pass one of them", strings.Join(given, " and "))
 	}
 	// DIRECTOR_ROOT is a root somebody named, whether in a setup script or in
 	// the environment director injects into the agents it spawns. Resolution
 	// puts it above the walk up and so does this, so that a root reached by
 	// exporting one variable is the same root every other command would use.
-	if os.Getenv(director.EnvRoot) != "" {
-		return resolveRoots()
-	}
-	here := filepath.Join(wd, director.ProjectDirName)
-
-	if info, statErr := os.Stat(here); statErr == nil && info.IsDir() {
-		return director.ResolveRoots(here, wd)
-	}
-	if found, findErr := director.ResolveRoots("", wd); findErr == nil &&
-		found.Layers[0].Kind == director.LayerProject {
-		return director.Roots{}, foundAbove(found.Primary, wd, here)
-	}
-	return director.ResolveRoots(here, wd)
+	return len(given) == 1 || os.Getenv(director.EnvRoot) != "", nil
 }
 
-// foundAbove is what init says instead of adopting a root it only found by
-// walking up out of the directory it was run in.
-func foundAbove(found, wd, here string) error {
-	return fmt.Errorf(`a configuration root already exists above this directory:
+// resolveSite decides where `director setup` installs the workflow.
+//
+// Unlike every other command, setup creates rather than resolves, and one part
+// of resolution does not survive that change: the walk up. A command run in a
+// subdirectory should find its project, and for reading that is right. For
+// creating it is a trap — a plain setup in a subdirectory or in a sibling
+// worktree would register a director in whichever fleet happened to be above
+// it, and the root it landed in would then be left with two directors of the
+// same name, which makes every later command refuse to run.
+//
+// So nothing here walks up on its own. Everything that names a root outright
+// is honoured, in the same order ResolveRoots uses: --config or --global, then
+// --dir, then DIRECTOR_ROOT. Otherwise the person is asked, with the current
+// directory suggested — and a root that exists above the directory they choose
+// is pointed out before a second one is created beneath it.
+//
+// The bool is whether a location was chosen at all: backing out of the
+// question is a normal outcome rather than a failure.
+func resolveSite(flags siteFlags, ask prompter) (director.Roots, bool, error) {
+	if _, err := flags.named(); err != nil {
+		return director.Roots{}, false, err
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return director.Roots{}, false, err
+	}
+	switch {
+	case opts.config != "":
+		roots, err := director.ResolveRoots(opts.config, wd)
+		return roots, true, err
+	case flags.global:
+		user := director.UserRoot()
+		if user == "" {
+			return director.Roots{}, false, errors.New("cannot work out the user root: neither $XDG_CONFIG_HOME nor a home directory is set")
+		}
+		roots, err := director.ResolveRoots(user, wd)
+		return roots, true, err
+	case flags.dir != "":
+		here, err := filepath.Abs(flags.dir)
+		if err != nil {
+			return director.Roots{}, false, err
+		}
+		roots, err := director.ResolveRoots(filepath.Join(here, director.ProjectDirName), wd)
+		return roots, true, err
+	case os.Getenv(director.EnvRoot) != "":
+		roots, err := director.ResolveRoots("", wd)
+		return roots, true, err
+	}
 
-  found:             %s
-  working directory: %s
-
-init will not adopt a root it was not pointed at: a director registered in a
-fleet you are not looking at is invisible to you and ambiguous to everyone
-else. Say which you meant:
-
-  director init --config %s
-      add a director to the root that already exists
-
-  director init --config %s
-      make this directory a project root of its own`,
-		found, wd, found, here)
+	if opts.asJSON {
+		return director.Roots{}, false, errors.New("no location chosen, and --json has nobody to ask: pass --dir <path>, --global or --config <root>")
+	}
+	if !ask.terminal {
+		return director.Roots{}, false, errors.New("no location chosen and no terminal to ask on: pass --dir <path>, --global or --config <root>")
+	}
+	root, err := askSite(ask, wd)
+	if err != nil || root == "" {
+		return director.Roots{}, false, err
+	}
+	roots, err := director.ResolveRoots(root, wd)
+	return roots, true, err
 }
 
-// starterConfigPath is the one starter whose contents are decided at init time
-// rather than copied verbatim.
+// askSite explains what is about to be installed, then asks where.
+//
+// The current directory is the suggestion, filled in rather than merely
+// described, so that Enter accepts it and anything else replaces it. A path
+// typed relative is relative to here. A directory that does not exist yet is
+// said back and confirmed before anything is created under it, because a typo
+// in a path is otherwise a root in a place nobody will look for one.
+//
+// Declining either confirmation backs out of the whole command rather than
+// asking again. Asking again reads better on a terminal, but off one — a test
+// driving line mode, or a pipe that has run dry — every re-ask gets the same
+// answer and the loop never ends. Returns "" when the person backs out.
+func askSite(ask prompter, wd string) (string, error) {
+	_, _ = fmt.Fprint(ask.out, workflowExplanation)
+	typed, ok, err := ask.input(
+		fmt.Sprintf("Where should the workflow be installed? (Enter for %s)", wd),
+		"A .director/ directory is created inside it. Type another path, relative to here, to use that instead.",
+		wd)
+	if err != nil || !ok {
+		return "", err
+	}
+	dir := typed
+	if dir == "" {
+		dir = wd
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(wd, dir)
+	}
+	dir = filepath.Clean(dir)
+	root := filepath.Join(dir, director.ProjectDirName)
+
+	// A root already there is the ordinary "add to the project I named";
+	// nothing further to confirm.
+	if info, statErr := os.Stat(root); statErr == nil && info.IsDir() {
+		return root, nil
+	}
+
+	switch info, statErr := os.Stat(dir); {
+	case statErr == nil && !info.IsDir():
+		return "", fmt.Errorf("%s is a file, not a directory", dir)
+	case statErr != nil:
+		create, err := ask.confirm(
+			fmt.Sprintf("%s does not exist. Create it?", dir),
+			fmt.Sprintf("The workflow would be installed in %s.", root),
+			"Create it", "Cancel", true)
+		if err != nil || !create {
+			return "", err
+		}
+	}
+
+	// A root above is what the silent walk up would have found. It is
+	// pointed out rather than adopted or refused: adding a director to it is
+	// one answer and a separate root here is another, and only the person
+	// knows which they meant.
+	if found, ok := rootAbove(dir); ok {
+		separate, err := ask.confirm(
+			fmt.Sprintf("A configuration root already exists above this directory, at %s. Create a separate one here anyway?", found),
+			"A director registered here is invisible to the fleet above, and the other way round. To add to the root above instead, cancel and run setup again with --dir pointing at its directory.",
+			"Create a separate root", "Cancel", false)
+		if err != nil || !separate {
+			return "", err
+		}
+	}
+	return root, nil
+}
+
+// rootAbove is the project root the walk up from dir would land in, if any —
+// not counting one in dir itself, which the caller has already ruled out.
+func rootAbove(dir string) (string, bool) {
+	found, err := director.ResolveRoots("", dir)
+	if err != nil || found.Layers[0].Kind != director.LayerProject {
+		return "", false
+	}
+	if found.Primary == filepath.Join(dir, director.ProjectDirName) {
+		return "", false
+	}
+	return found.Primary, true
+}
+
+// reportDryRun says what the workflow half would have done, without doing it.
+//
+// The skills half has already reported its own would-writes. What is left is
+// the root: which starters would land, and whether a director would be created
+// or the one already there adopted. Register is not consulted, because it
+// writes; the same rule it applies is stated here instead.
+func reportDryRun(roots director.Roots, pending []starterFile, installed []skillInstall, chosenHarness, workflow string, createNew bool) error {
+	if workflow == "" {
+		workflow = director.DefaultWorkflow
+	}
+	existing, _ := director.ListDirectors(roots.Primary)
+	action, subject := "would-create", ""
+	switch {
+	case createNew || len(existing) == 0:
+	case len(existing) == 1:
+		action, subject = "would-adopt", existing[0].DirectorID
+	default:
+		action = "would-refuse"
+	}
+
+	wrote := make([]string, 0, len(pending))
+	for _, file := range pending {
+		wrote = append(wrote, file.target)
+	}
+	if opts.asJSON {
+		return emit(map[string]any{
+			"dry_run":   true,
+			"skills":    installed,
+			"director":  subject,
+			"workflow":  workflow,
+			"root":      roots.Primary,
+			"harness":   chosenHarness,
+			"action":    action,
+			"directors": len(existing),
+			"ambiguous": len(existing) > 1,
+			"wrote":     wrote,
+		})
+	}
+	for _, path := range wrote {
+		fmt.Printf("would write %s\n", path)
+	}
+	switch action {
+	case "would-create":
+		fmt.Printf("\nwould register a director bound to workflow %q under %s\n", workflow, roots.Primary)
+	case "would-adopt":
+		fmt.Printf("\nwould use director %s (%s), already registered under %s; nothing would be created\n",
+			existing[0].DirectorID, existing[0].Name, roots.Primary)
+	default:
+		fmt.Printf("\nwould refuse: %d directors are already registered under %s and setup will not pick between them\n",
+			len(existing), roots.Primary)
+	}
+	return nil
+}
+
+// starterConfigPath is the one starter whose contents are decided at setup
+// time rather than copied verbatim.
 const starterConfigPath = "starters/director.conf"
 
 // harnessPlaceholder is what the chosen harness is substituted for.
 const harnessPlaceholder = "{{harness}}"
 
-// initPrompter is the prompter `director init` asks with. Only a test replaces
-// it, so that the asking path can be driven from scripted input.
-var initPrompter = newPrompter
-
-// starterFile is one starter this init will write: where it comes from in the
-// embedded tree, and where it lands.
+// starterFile is one starter this setup will write: where it comes from in
+// the embedded tree, and where it lands.
 type starterFile struct {
 	source string
 	target string
 }
 
-// pendingStarters works out which starters this init will write, without
+// pendingStarters works out which starters this setup will write, without
 // writing any of them.
 //
-// Deciding first is what lets init ask its questions before it touches the
+// Deciding first is what lets setup ask its questions before it touches the
 // disk, and it keeps the skip rules in one place rather than in one function
 // that decides and another that guesses the same thing again.
 //
 // Only a root that has no workflows yet gets starters, unless forced. Skipping
 // files that already exist is not enough: a starter the user deliberately
-// deleted would come back on the next init, quietly reintroducing a workflow
+// deleted would come back on the next setup, quietly reintroducing a workflow
 // they had removed — and a second workflow is not inert, it makes creating a
 // director ambiguous. An established root is left exactly as its owner left it.
 func pendingStarters(root string, force bool) ([]starterFile, error) {
@@ -391,7 +694,7 @@ func checkHarness(name string) error {
 	return nil
 }
 
-// askHarness puts the question, through the same prompter `director install`
+// askHarness puts the question, through the same prompter the skills half
 // asks with. One mechanism, so there is nothing to drift.
 //
 // The choices are the adapter registry, so what is offered is exactly what this
@@ -408,7 +711,7 @@ func askHarness(ask prompter, current string) (string, error) {
 	description := "Written to director.conf as the default placement. A workflow, a task, or `director spawn --harness` still overrides it, and the file is yours to edit afterwards."
 	if current != "" {
 		title = fmt.Sprintf("This root spawns on %s. Which harness should it use?", current)
-		description = "Its director.conf was written by hand, so init will not rewrite it. Answering says what belongs in it."
+		description = "Its director.conf was written by hand, so setup will not rewrite it. Answering says what belongs in it."
 	}
 	return ask.selectOne(title, description, options)
 }
@@ -417,14 +720,14 @@ func askHarness(ask prompter, current string) (string, error) {
 // director.conf.
 //
 // The answer is not applied, and that is deliberate: the file is hand-edited
-// and commented, and init reaching into it to change a key would be init
+// and commented, and setup reaching into it to change a key would be setup
 // editing somebody's configuration behind them. But it is still asked, and
 // still answered in full. Saying nothing is what let a director be registered
 // against a harness nobody had picked, which is the whole complaint; declining
 // to write is a different thing from declining to speak.
 //
 // Returns the harness the root actually spawns on, which is what it spawned on
-// before init ran.
+// before setup ran.
 func reviewHarness(root, flag string, ask prompter) (string, error) {
 	path := filepath.Join(root, "director.conf")
 	config, err := director.LoadConfig(root)
@@ -461,7 +764,7 @@ func reviewHarness(root, flag string, ask prompter) (string, error) {
 	case chosen == current:
 		fmt.Printf("%s already says harness = %s. Nothing to change.\n\n", path, current)
 	default:
-		fmt.Printf("%s is yours, not init's, so it was left as it is.\n", path)
+		fmt.Printf("%s is yours, not setup's, so it was left as it is.\n", path)
 		if current != "" {
 			fmt.Printf("It says harness = %s. To spawn on %s instead, change that one line:\n\n", current, chosen)
 		} else {
@@ -519,7 +822,7 @@ func newWorkflowsCmd() *cobra.Command {
 				return emit(workflows)
 			}
 			if len(workflows) == 0 {
-				fmt.Println("no workflows found; run `director init` to create the starters")
+				fmt.Println("no workflows found; run `director setup` to create the starters")
 				return nil
 			}
 			out := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
@@ -626,7 +929,7 @@ func newDirectorsCmd() *cobra.Command {
 				return nil
 			}
 			if len(states) == 0 && unreadable == nil {
-				fmt.Printf("no directors under %s; run `director init`\n", roots.Primary)
+				fmt.Printf("no directors under %s; run `director setup`\n", roots.Primary)
 				return nil
 			}
 			if len(states) > 0 {

@@ -89,7 +89,7 @@ func New() *Adapter { return &Adapter{Kind: defaultKind} }
 func (a *Adapter) Name() string { return Name }
 
 // This adapter deliberately does not implement harness.SkillInstaller, so
-// `director install` passes over it.
+// `director setup` passes over it.
 //
 // herdr does not read skills. It opens a pane and launches somebody else's
 // agent in it, and that agent loads skills from its own harness — installing

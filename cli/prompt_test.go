@@ -31,7 +31,7 @@ func renderMultiSelect(t *testing.T, title, description string, options []huh.Op
 func TestMultiSelectShowsEveryOption(t *testing.T) {
 	t.Parallel()
 
-	// The description that wraps is not incidental. `director install` asks
+	// The description that wraps is not incidental. `director setup` asks
 	// with one of these, and on an eighty-column terminal it takes two lines —
 	// which is how a two-option question came to render one option, with the
 	// other below the fold and nothing on screen to say so.

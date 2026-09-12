@@ -8,7 +8,7 @@ description: Choose task types, permission scopes and harness placement when spa
 ## Task types are not built in
 
 Everything a director can spawn comes from the workflow it was bound to at
-`director init`. Nothing about what a task *means* is built into the tool —
+`director setup`. Nothing about what a task *means* is built into the tool —
 the names, the stages, the permissions and the prompts are all somebody's
 configuration.
 

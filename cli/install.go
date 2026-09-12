@@ -10,7 +10,6 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/rwmyers/agent-director/harness"
-	"github.com/spf13/cobra"
 )
 
 // Scope is whether skills are installed for one project or for every project.
@@ -118,90 +117,77 @@ func notATarget(name string, available []host) error {
 		"       Install for the agent you direct from inside it instead (install targets: %s)", name, because, targets)
 }
 
-func newInstallCmd() *cobra.Command {
-	var scope string
-	var hostNames []string
-	var dryRun bool
+// skillInstall is what the skills half did, or would do, for one harness.
+//
+// It is the record the JSON report is built from as well as the prose, so the
+// two cannot disagree about which files went where.
+type skillInstall struct {
+	host  host
+	Host  string   `json:"host"`
+	Scope Scope    `json:"scope"`
+	Wrote []string `json:"wrote"`
+	// Verified is the harness's own claim that these paths were confirmed
+	// against a real installation, repeated here because it is what decides
+	// whether the person needs to go and check.
+	Verified bool `json:"verified"`
+}
 
-	cmd := &cobra.Command{
-		Use: "setup",
-		// install is what this command was called first, and it is in the
-		// shipped instructions, in the skills, and in people's setup scripts.
-		// The rename changes the name, not what already works, so the old word
-		// keeps resolving here silently rather than with a deprecation notice.
-		Aliases: []string{"install"},
-		Short:   "Install the director skills for a harness on this machine",
-		Long: `Copies the shipped skills where a harness will find them, so an agent
-can pick them up as /director.
-
-Asks which harness and whether to install for this project or for every
-project. Pass --host and --scope to skip the questions, which is what a setup
-script wants.
-
-The harnesses offered here are the ones with somewhere to put a skill, which is
-not the set director can drive — that is what ` + "`director harnesses`" + ` lists. A harness
-that displays another harness's conversation reads no skills of its own, so
-install for the agent you run inside it instead.
-
-Nothing is written into .director/ — the skills are the director's operating
-instructions and ship with the binary. Edit them and they stop being what
-director thinks it installed, so if you want to change them, fork the file and
-point your harness at your copy instead.`,
-		Args: cobra.NoArgs,
-		RunE: func(cmd *cobra.Command, args []string) error {
-			chosenScope, err := resolveScope(scope)
-			if err != nil {
-				return err
-			}
-			chosenHosts, err := resolveHosts(hostNames)
-			if err != nil {
-				return err
-			}
-			if len(chosenHosts) == 0 {
-				fmt.Println("Nothing selected. The skills are still readable with:")
-				fmt.Println("\n    director skills --cat director")
-				return nil
-			}
-
-			projectRoot, err := os.Getwd()
-			if err != nil {
-				return err
-			}
-
-			for _, chosen := range chosenHosts {
-				target, err := targetDir(chosen, chosenScope, projectRoot)
-				if err != nil {
-					return err
-				}
-				written, err := copySkills(target, dryRun)
-				if err != nil {
-					return err
-				}
-				fmt.Printf("\n%s (%s):\n", chosen.locations.Description, chosenScope)
-				for _, path := range written {
-					if dryRun {
-						fmt.Printf("  would write %s\n", path)
-					} else {
-						fmt.Printf("  wrote %s\n", path)
-					}
-				}
-				if !chosen.locations.Verified {
-					fmt.Printf("  note: these paths are not verified against a real %s installation.\n", chosen.name)
-					fmt.Printf("        Check the skills are picked up; if not, place them by hand with `director skills --cat`.\n")
-				}
-				warnOtherScope(chosen, chosenScope, projectRoot)
-			}
-			return nil
-		},
+// installSkills copies the shipped skills into each chosen harness's directory
+// at the chosen scope — or, under dryRun, works out where they would go.
+func installSkills(chosen []host, scope Scope, projectRoot string, dryRun bool) ([]skillInstall, error) {
+	installed := make([]skillInstall, 0, len(chosen))
+	for _, h := range chosen {
+		target, err := targetDir(h, scope, projectRoot)
+		if err != nil {
+			return nil, err
+		}
+		written, err := copySkills(target, dryRun)
+		if err != nil {
+			return nil, err
+		}
+		installed = append(installed, skillInstall{
+			host: h, Host: h.name, Scope: scope, Wrote: written, Verified: h.locations.Verified,
+		})
 	}
-	cmd.Flags().StringVar(&scope, "scope", "", "project | global (default: ask)")
-	cmd.Flags().StringSliceVar(&hostNames, "host", nil, "harness to install for, repeatable (default: ask)")
-	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "print what would be written and change nothing")
-	return cmd
+	return installed, nil
+}
+
+// reportSkills is the prose account of the skills half.
+//
+// An empty selection is said outright rather than skipped over. Choosing no
+// harness is legitimate — the skills can be placed by hand — but a run that
+// goes straight on to the workflow without a word leaves the person unsure
+// whether the first question was heard.
+func reportSkills(installed []skillInstall, projectRoot string, dryRun bool) {
+	if len(installed) == 0 {
+		fmt.Println("No harness selected, so no skills were installed. They are still readable with:")
+		fmt.Println("\n    director skills --cat director")
+		return
+	}
+	for _, done := range installed {
+		fmt.Printf("\n%s (%s):\n", done.host.locations.Description, done.Scope)
+		for _, path := range done.Wrote {
+			if dryRun {
+				fmt.Printf("  would write %s\n", path)
+			} else {
+				fmt.Printf("  wrote %s\n", path)
+			}
+		}
+		if !done.Verified {
+			fmt.Printf("  note: these paths are not verified against a real %s installation.\n", done.Host)
+			fmt.Printf("        Check the skills are picked up; if not, place them by hand with `director skills --cat`.\n")
+		}
+		warnOtherScope(done.host, done.Scope, projectRoot)
+	}
 }
 
 // resolveScope takes the flag or asks.
-func resolveScope(flag string) (Scope, error) {
+//
+// It asks only on a terminal, and only when nobody is parsing stdout. There
+// used to be a fallback to huh's line mode for a pipe, under which an empty
+// stdin selected project scope; that is a guess made on somebody's behalf, and
+// a script that wanted project scope can say so.
+func resolveScope(flag string, ask prompter) (Scope, error) {
 	switch Scope(flag) {
 	case ScopeProject, ScopeGlobal:
 		return Scope(flag), nil
@@ -209,12 +195,14 @@ func resolveScope(flag string) (Scope, error) {
 	default:
 		return "", fmt.Errorf("unknown scope %q (valid: project, global)", flag)
 	}
+	if opts.asJSON {
+		return "", errors.New("no scope chosen, and --json has nobody to ask: pass --scope project|global")
+	}
+	if !ask.terminal {
+		return "", errors.New("no scope chosen and no terminal to ask on: pass --scope project|global")
+	}
 
-	// Not a terminal falls back to huh's accessible line mode rather than
-	// failing, so piped answers work. Project is listed first and is therefore
-	// what an empty stdin selects: it writes inside the current directory and
-	// is trivially undone, which is the right way for a guess to be wrong.
-	chosen, err := newPrompter().selectOne(
+	chosen, err := ask.selectOne(
 		"Install the director skills where?",
 		"Project puts them in this repository, so they travel with it. Global covers every project on this machine.",
 		[]huh.Option[string]{
@@ -232,7 +220,7 @@ func resolveScope(flag string) (Scope, error) {
 
 // resolveHosts takes the flags or asks, defaulting the selection to whatever
 // looks installed.
-func resolveHosts(names []string) ([]host, error) {
+func resolveHosts(names []string, ask prompter) ([]host, error) {
 	available := installTargets()
 
 	if len(names) > 0 {
@@ -246,8 +234,14 @@ func resolveHosts(names []string) ([]host, error) {
 		}
 		return chosen, nil
 	}
+	if opts.asJSON {
+		return nil, errors.New("no harness chosen, and --json has nobody to ask: pass --host (`director skills --path` lists the targets)")
+	}
+	if !ask.terminal {
+		return nil, errors.New("no harness chosen and no terminal to ask on: pass --host (`director skills --path` lists the targets)")
+	}
 
-	picked, err := newPrompter().selectMany(
+	picked, err := ask.selectMany(
 		"Which harness should be able to direct?",
 		"Skills are how an agent learns to act as a director. Pick every harness you direct from.",
 		hostOptions(available))

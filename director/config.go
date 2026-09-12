@@ -281,7 +281,7 @@ func (r Roots) FindWorkflow(name string) (*Workflow, error) {
 		names[i] = workflow.Name
 	}
 	if len(names) == 0 {
-		return nil, fmt.Errorf("no workflow named %q, and no workflows are defined under %s — run `director init` to create one", name, r.Primary)
+		return nil, fmt.Errorf("no workflow named %q, and no workflows are defined under %s — run `director setup` to create one", name, r.Primary)
 	}
 	return nil, fmt.Errorf("no workflow named %q (available: %s)", name, strings.Join(names, ", "))
 }

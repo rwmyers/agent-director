@@ -22,8 +22,9 @@ type promptField interface {
 //
 // On a terminal the fields render as a full TUI. When stdin is not a terminal
 // it falls back to huh's accessible line-based mode, so the same command still
-// works from a script or a pipe — which matters here because `director install`
-// is exactly the sort of thing somebody puts in a setup script.
+// still works from a script or a pipe. `director setup` declines to ask at all
+// off a terminal and takes flags instead; the fallback is for the commands that
+// confirm a deletion, where a piped answer is a reasonable thing to give.
 type prompter struct {
 	in  io.Reader
 	out io.Writer
@@ -103,6 +104,34 @@ func (p prompter) selectOne(title, description string, options []huh.Option[stri
 		return "", err
 	}
 	return chosen, nil
+}
+
+// input asks for a line of text, with initial already filled in.
+//
+// The initial value is a suggestion the person can accept with Enter or type
+// over, and it comes back as the answer when they do neither — in the full TUI
+// because it is what the field holds, in line mode because huh substitutes it
+// for an empty line. That is what makes it usable for "here, unless you say
+// otherwise" questions without a validator, which would reject the empty line
+// before the default could stand in for it.
+//
+// The bool is whether an answer was given at all: backing out is a normal
+// outcome and not a failure, but for a text field the zero value is not enough
+// to say so, since an empty answer means the initial value.
+func (p prompter) input(title, description, initial string) (string, bool, error) {
+	value := initial
+	field := huh.NewInput().
+		Title(title).
+		Description(description).
+		Value(&value)
+
+	if err := p.run(field); err != nil {
+		if errors.Is(err, huh.ErrUserAborted) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return strings.TrimSpace(value), true, nil
 }
 
 // multiSelectField builds the multiple-choice field, with every option on
