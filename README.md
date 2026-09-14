@@ -290,3 +290,7 @@ golangci-lint installed separately:
 ```sh
 go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
 ```
+
+## License
+
+MIT — see [LICENSE](LICENSE).
