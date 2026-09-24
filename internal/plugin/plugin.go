@@ -231,7 +231,7 @@ type Description struct {
 	Version    string   `json:"version"`
 	Enforces   []string `json:"enforces"`
 	// Skills is where director's skills belong for this harness. Omitting it
-	// says the harness has no place for them, and `director install` passes
+	// says the harness has no place for them, and `director setup` passes
 	// over the plugin rather than offering a target it cannot write.
 	Skills *Skills `json:"skills,omitempty"`
 	// Hosting is what this harness offers a director running inside it.

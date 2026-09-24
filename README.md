@@ -29,31 +29,45 @@ paid for a hundred times. `director status asks <id>` has the text.
 
 Two separate things, done by two different people at two different times.
 
-**Setting up a project — a person, once.** `director init` writes a
-`.director/` root into the repository: workflows, task types, prompts, the
-harness default. Those are decisions about how *this* project delegates work,
-they belong in version control, and no agent should be making them.
+**Setting up a project — a person, once.** `director setup` puts the
+director skills where your harness finds them, then writes a `.director/` root
+into the repository: workflows, task types, prompts, the harness default. Those
+are decisions about how *this* project delegates work, they belong in version
+control, and no agent should be making them.
 
 ```sh
 make install
 # if this project spawns into a harness director does not ship, put its
 # director-harness-<name> executable on $PATH now — see "Adding a harness"
 cd your-project
-director init                       # asks which harness, writes .director/ with starter workflows
-                                    # safe to repeat: it uses the director already
-                                    # registered here. `--new` adds a second one.
-director setup                      # put the director skills where your harness finds them
+director setup                      # asks which harness(es) get the skills and at what scope,
+                                    # explains what a workflow is, asks where to put it
+                                    # (here, unless you say otherwise) and which harness the
+                                    # project spawns into, then writes .director/ with starter
+                                    # workflows and registers a director.
+                                    # Safe to repeat: it uses the director already registered
+                                    # there. `--new` adds a second one.
 $EDITOR .director/workflows/*.conf  # make the task types yours
 ```
 
+Every question has a flag — `--host`, `--scope`, `--dir` (or `--global` for the
+user root, or `--config` for a root named outright) and `--harness` — and
+without a terminal, or under `--json`, all of them are required rather than
+guessed at. Project-scope skills (`--scope project`) go into the same project
+as the workflow — the directory you gave `--dir` or accepted at the prompt — so
+`director setup --scope project --dir ~/proj/foo` puts both `.director/` and
+the harness's skills directory inside `foo`, wherever you run it from. Under
+`--global` or `--config` the location is a root rather than a project, and
+project-scope skills go under the current directory instead.
+
 [Adding a harness](#adding-a-harness) below says how to write or install one.
-It goes before `init` because init offers only the harnesses it can find at the
-moment it runs, and writes that answer into `.director/director.conf`.
+It goes before `setup` because setup offers only the harnesses it can find at
+the moment it runs, and writes that answer into `.director/director.conf`.
 Installing one afterwards is not fatal — `director harnesses` lists it and
-`director spawn --harness` reaches it — but init will never rewrite a
+`director spawn --harness` reaches it — but setup will never rewrite a
 `director.conf` you now own, so you change the `harness =` line yourself and
-re-run `director setup` to place the plugin's skills. Re-running `director
-init` prints the line to change rather than changing it.
+re-run `director setup` to place the plugin's skills. Re-running it prints the
+line to change rather than changing it.
 
 **Starting a directing session — an agent, every conversation.** Open a
 conversation with your coding agent and invoke the **`/director`** skill.
@@ -145,7 +159,7 @@ be labelled identically to anyone looking at the harness rather than at director
 
 Nothing about what a task *means* is built in. A **workflow** is a bundle of
 task types, permission scopes, and placement defaults, and a director is bound
-to one at `director init`. Task types are yours:
+to one at `director setup`. Task types are yours:
 
 ```ini
 [permission.read-only]
@@ -233,8 +247,8 @@ them deliberately and says which.
 
 ## Commands
 
-**Setup** — `init` · `attach` · `where` · `workflows` · `tasks` · `directors` ·
-`retire` · `harnesses` · `skills` · `setup` (also answers to `install`)
+**Setup** — `setup` · `attach` · `where` · `workflows` · `tasks` · `directors` ·
+`retire` · `harnesses` · `skills`
 
 **Directing** — `spawn` · `status` · `read` · `send` · `answer` · `nudge` ·
 `stop` · `resume` · `note`

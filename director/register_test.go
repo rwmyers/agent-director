@@ -46,7 +46,7 @@ func fixedClock(t time.Time) Clock { return func() time.Time { return t } }
 
 func TestRegisterIsIdempotent(t *testing.T) {
 	t.Parallel()
-	// The reported failure: `director init` run twice in one root — by a setup
+	// The reported failure: `director setup` run twice in one root — by a setup
 	// script, or by an agent reaching for it after something else complained
 	// there was no director — left two directors with the same auto-generated
 	// name, and every later command in that root refused to choose between
@@ -122,7 +122,7 @@ func TestRegisterNewCreatesADistinguishableSecond(t *testing.T) {
 func TestRegisterWillNotChooseBetweenSeveral(t *testing.T) {
 	t.Parallel()
 	// A root that already holds two — from a version that created them, or
-	// from somebody who asked for both — is one init cannot resolve, and
+	// from somebody who asked for both — is one setup cannot resolve, and
 	// registering a third would make it worse rather than better.
 	roots := newTestRoots(t)
 	now := time.Date(2026, 8, 31, 9, 0, 0, 0, time.UTC)
@@ -201,7 +201,7 @@ func TestRegisterRefusesToAdoptOntoADifferentWorkflow(t *testing.T) {
 
 func TestInitNeverMintsTwoDirectorsWithOneName(t *testing.T) {
 	t.Parallel()
-	// Init is reached by `director attach --new` as well as by `director init`,
+	// Init is reached by `director attach --new` as well as by `director setup`,
 	// and a second conversation asking for its own director must still get one
 	// it can be told apart from the first.
 	roots := newTestRoots(t)

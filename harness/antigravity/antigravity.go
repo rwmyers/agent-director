@@ -22,7 +22,7 @@ import (
 
 func init() { harness.RegisterSkillInstaller(Name, locations{}) }
 
-// Name is the harness name, which is what `director install --host` takes.
+// Name is the harness name, which is what `director setup --host` takes.
 const Name = "antigravity"
 
 type locations struct{}

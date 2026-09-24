@@ -556,7 +556,7 @@ func TestAdapterErrorPropagatesToGetAndStatus(t *testing.T) {
 // The placement order is the crux of running a director inside a pane, and
 // every row here is a way of getting it wrong. Detection has to outrank the
 // configured default — under a root that names a harness, which is every root
-// `director init` writes, a detection placed below it would never fire at all.
+// `director setup` writes, a detection placed below it would never fire at all.
 // It has to lose to a flag and to a pin, because those are somebody deciding
 // about this piece of work and an ambient signal must not overrule a decision.
 func TestAdapterForPrecedence(t *testing.T) {

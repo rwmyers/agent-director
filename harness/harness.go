@@ -362,7 +362,7 @@ type ResumeRequest struct {
 }
 
 // SkillInstaller is the ability to say where director's skills belong for one
-// harness, so that `director install` can offer it as a target.
+// harness, so that `director setup` can offer it as a target.
 //
 // Being installable and being drivable are separate: a harness may declare
 // where its skills go, may be able to run a conversation, or may do both.

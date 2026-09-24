@@ -202,7 +202,7 @@ func Attach(ctx context.Context, roots Roots, id string, createNew bool, name, w
 		if workflow == "" {
 			available, err := roots.ListWorkflows()
 			if err != nil || len(available) == 0 {
-				return nil, false, fmt.Errorf("no workflows are defined under %s — run `director init` first", roots.Primary)
+				return nil, false, fmt.Errorf("no workflows are defined under %s — run `director setup` first", roots.Primary)
 			}
 			if len(available) > 1 {
 				names := make([]string, len(available))

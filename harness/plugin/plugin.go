@@ -85,7 +85,7 @@ func (a *Adapter) describe() (*plugin.Description, error) {
 // happens before describe has run; a plugin that declares no skills block
 // returns harness.ErrNoSkillLocations, which the installer reads as a decline
 // rather than as a fault. Asking costs one describe per plugin, which is why
-// only `director install` asks — the rest of director never needs to know.
+// only `director setup` asks — the rest of director never needs to know.
 func (a *Adapter) SkillLocations() (harness.SkillLocations, error) {
 	description, err := a.describe()
 	if err != nil {

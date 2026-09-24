@@ -1100,7 +1100,7 @@ func TestHostsAndLocate(t *testing.T) {
 // herdr reads no skills. It opens a pane and launches somebody else's agent in
 // it, and that agent loads skills from its own harness — so installing for
 // claude-code is what puts them in front of a claude running under herdr. A
-// herdr entry in `director install` would write them where nothing reads them,
+// herdr entry in `director setup` would write them where nothing reads them,
 // and whoever picked it would have no way to tell that from its having worked.
 func TestHerdrIsNotAnInstallTarget(t *testing.T) {
 	t.Parallel()

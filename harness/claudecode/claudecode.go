@@ -62,7 +62,7 @@ func New() *Adapter {
 // Name identifies the adapter.
 func (a *Adapter) Name() string { return Name }
 
-// SkillLocations tells `director install` where Claude Code looks for skills.
+// SkillLocations tells `director setup` where Claude Code looks for skills.
 //
 // It goes through harness.SkillInstaller like anything else. Being built in
 // buys no shortcut: if this adapter could hand the installer a path the public
