@@ -36,17 +36,37 @@ are decisions about how *this* project delegates work, they belong in version
 control, and no agent should be making them.
 
 ```sh
+# Installs the `director` binary to your default GOBIN directory variable,
+# $HOME/go/bin by default.
+
 make install
-# if this project spawns into a harness director does not ship, put its
-# director-harness-<name> executable on $PATH now — see "Adding a harness"
-cd your-project
-director setup                      # asks which harness(es) get the skills and at what scope,
-                                    # explains what a workflow is, asks where to put it
-                                    # (here, unless you say otherwise) and which harness the
-                                    # project spawns into, then writes .director/ with starter
-                                    # workflows and registers a director.
-                                    # Safe to repeat: it uses the director already registered
-                                    # there. `--new` adds a second one.
+
+# If your project needs support far a harness that `director` does not have
+# built-in support for, you should add a `director-harness-<name>` executable in
+# your path before proceeding.
+#
+# See:
+#   https://github.com/rwmyers/agent-director#adding-a-harness
+# for how to do that.
+
+cd <your-project>
+
+# The following command:
+# - asks for which harness(es) to install the skills and at what scope
+# - explains what a workflow is
+# - asks where to setup director (<your-project> directory, unless you say
+#   otherwise)
+# - asks which harness the project uses
+# - creates a `.director/` directory with starter workflows and registers a
+#   director.
+#
+# It is safe to run multiple times: it uses the director already registered
+# after the first time.
+#
+# If you want to add a second director, use `--new`.
+
+director setup
+
 $EDITOR .director/workflows/*.conf  # make the task types yours
 ```
 
